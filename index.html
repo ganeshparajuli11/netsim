@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenNetSim</title>
+<meta name="description" content="Open-source network simulator for learning: build topologies, configure routers and switches from a CLI, and watch every packet.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="src/ui/styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand" title="OpenNetSim">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><circle cx="7" cy="16" r="4"/><circle cx="25" cy="8" r="4"/><circle cx="25" cy="24" r="4"/><path d="M11 16h6l4-6M17 16l4 6"/></svg>
+      <span>OpenNetSim</span>
+    </div>
+    <nav class="file-actions" aria-label="File">
+      <button data-action="new">New</button>
+      <button data-action="open">Open…</button>
+      <button data-action="save">Save</button>
+      <button data-action="labs" class="labs-btn">Labs</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="clock" id="clock" title="Simulated time">0.000 s</div>
+    <div class="mode-switch" role="radiogroup" aria-label="Mode">
+      <button role="radio" aria-checked="true" data-mode="realtime">Realtime</button>
+      <button role="radio" aria-checked="false" data-mode="simulation">Simulation</button>
+    </div>
+    <button class="icon-btn" id="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+  </header>
+
+  <aside class="rail" aria-label="Devices and tools">
+    <section class="tools" aria-label="Tools">
+      <button class="tool active" data-tool="select" title="Select and move (Esc)"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></svg><span>Select</span></button>
+      <button class="tool" data-tool="cable" title="Connect devices with a cable (C)"><svg viewBox="0 0 24 24"><path d="M4 20c6 0 4-16 16-16"/><circle cx="4" cy="20" r="2"/><circle cx="20" cy="4" r="2"/></svg><span>Cable</span></button>
+      <button class="tool" data-tool="pdu" title="Send a single ping between two hosts (P)"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1"/><path d="M3 7l9 6 9-6"/></svg><span>Ping</span></button>
+      <button class="tool" data-tool="delete" title="Delete devices or cables (Del)"><svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/></svg><span>Delete</span></button>
+    </section>
+    <section class="palette" aria-label="Devices">
+      <h2>Drag onto the workspace</h2>
+      <div id="palette"></div>
+    </section>
+  </aside>
+
+  <main class="workspace" id="workspace">
+    <svg id="canvas" tabindex="0" aria-label="Network topology">
+      <defs>
+        <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="1" class="grid-dot"/>
+        </pattern>
+      </defs>
+      <rect class="grid-bg" x="-5000" y="-5000" width="10000" height="10000" fill="url(#grid)"/>
+      <g id="viewport">
+        <g id="links-layer"></g>
+        <g id="devices-layer"></g>
+        <g id="pdu-layer"></g>
+        <line id="cable-ghost" class="cable-ghost" visible="false"/>
+      </g>
+    </svg>
+    <div id="hint" class="hint" role="status"></div>
+    <div class="zoom">
+      <button data-zoom="in" aria-label="Zoom in">+</button>
+      <button data-zoom="fit" aria-label="Fit to screen">Fit</button>
+      <button data-zoom="out" aria-label="Zoom out">−</button>
+    </div>
+  </main>
+
+  <aside class="side" id="side" aria-label="Details"></aside>
+
+  <footer class="statusbar" id="statusbar"></footer>
+</div>
+<div id="windows"></div>
+<div id="menus"></div>
+<input type="file" id="file-input" accept=".json,.onsim" hidden>
+<script type="module" src="src/ui/app.js"></script>
+</body>
+</html>
