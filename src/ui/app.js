@@ -226,23 +226,13 @@ class App {
 
   action(a) {
     if (a === 'new') {
-      if (this.net.devices.size && !confirm('Start a new, empty network? The current one will be replaced (save it first if you want to keep it).')) return;
-      Device.resetIds();
-      this.newNetwork();
+      const go = () => { Device.resetIds(); this.newNetwork(); };
+      if (!this.net.devices.size) { go(); return; }
+      this.confirmBox('Start a new network?', 'The current network will be replaced. Save it first if you want to keep it.', 'Start new network', go);
     } else if (a === 'save') {
-      const data = JSON.stringify(serializeNetwork(this.net, { lab: this.lab?.id || null }), null, 1);
-      const blob = new Blob([data], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${this.lab ? this.lab.id : 'network'}.onsim.json`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-      this.toast('Saved to your downloads');
+      this.showSave();
     } else if (a === 'open') {
-      document.getElementById('file-input').click();
+      this.showOpen();
     } else if (a === 'labs') {
       this.showLabs();
     }
@@ -621,6 +611,78 @@ class App {
     back.querySelector('.x').focus();
   }
 
+  modal(title, html) {
+    document.querySelector('.modal-back')?.remove();
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="modal" role="dialog" aria-label="${esc(title)}" style="width:min(560px,100%)"><div class="modal-head"><h2>${esc(title)}</h2><button class="x" aria-label="Close">×</button></div><div class="modal-body">${html}</div></div>`;
+    back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('.x')) back.remove(); });
+    document.body.appendChild(back);
+    return back;
+  }
+
+  confirmBox(title, text, okLabel, onOk) {
+    const m = this.modal(title, `<p style="margin-top:0">${esc(text)}</p><div class="form-actions"><button class="primary" id="ok">${esc(okLabel)}</button><button class="secondary" id="cancel">Cancel</button></div>`);
+    m.querySelector('#ok').onclick = () => { m.remove(); onOk(); };
+    m.querySelector('#cancel').onclick = () => m.remove();
+    m.querySelector('#ok').focus();
+  }
+
+  showSave() {
+    const data = JSON.stringify(serializeNetwork(this.net, { lab: this.lab?.id || null }), null, 1);
+    const name = `${this.lab ? this.lab.id : 'network'}.onsim.json`;
+    const m = this.modal('Save network', `
+      <p style="margin-top:0">Download the topology as <code>${esc(name)}</code>, or copy it and keep it anywhere. Open it again later with <b>Open…</b>.</p>
+      <div class="form-actions" style="margin-top:0"><button class="primary" id="dl">Download file</button><button class="secondary" id="cp">Copy to clipboard</button></div>
+      <textarea class="field" id="save-json" rows="8" readonly style="margin-top:12px;font-size:12px">${esc(data)}</textarea>
+      <p class="note" id="save-msg">Your work is also saved automatically in this browser.</p>`);
+    const msg = m.querySelector('#save-msg');
+    m.querySelector('#dl').onclick = async () => {
+      // Inside a hosted viewer, ask it to save the file; elsewhere use a normal browser download.
+      const dl = window.claude?.use ? await window.claude.use('downloads').catch(() => null) : null;
+      if (dl) {
+        try { await dl.save({ filename: name, data }); msg.textContent = 'Saved.'; } catch (err) { msg.textContent = err?.code === 'declined' ? 'Download cancelled.' : 'The download was blocked. Use Copy to clipboard instead.'; }
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      msg.textContent = 'If no download started (some embedded viewers block them), use Copy to clipboard instead.';
+    };
+    m.querySelector('#cp').onclick = () => {
+      const ta = m.querySelector('#save-json');
+      navigator.clipboard?.writeText(data).then(() => { msg.textContent = 'Copied. Paste it into a text file to keep it.'; })
+        .catch(() => { ta.focus(); ta.select(); msg.textContent = 'Press Ctrl+C (or Cmd+C) to copy the selected text.'; });
+    };
+  }
+
+  showOpen() {
+    const m = this.modal('Open network', `
+      <p style="margin-top:0">Choose a saved <code>.onsim.json</code> file, or paste its contents below. This replaces the current network.</p>
+      <div class="form-actions" style="margin-top:0"><button class="primary" id="pick">Choose file…</button></div>
+      <textarea class="field" id="open-json" rows="6" placeholder="…or paste a saved network here" style="margin-top:12px;font-size:12px"></textarea>
+      <div class="form-actions"><button class="secondary" id="load-paste">Open pasted network</button></div>
+      <p class="note" id="open-msg"></p>`);
+    m.querySelector('#pick').onclick = () => { m.remove(); document.getElementById('file-input').click(); };
+    m.querySelector('#load-paste').onclick = () => {
+      try {
+        const data = JSON.parse(m.querySelector('#open-json').value);
+        Device.resetIds();
+        const net = loadNetwork(data, new Network());
+        m.remove();
+        this.newNetwork(net, LABS.find((l) => l.id === data.lab) || null);
+        this.toast('Network opened');
+      } catch (err) {
+        m.querySelector('#open-msg').innerHTML = `<span class="status-bad">That is not a saved network (${esc(err.message)}). Paste the whole file, starting with {.</span>`;
+      }
+    };
+  }
+
   // ------------------------------------------------------------ labs
   showLabs() {
     const back = document.createElement('div');
@@ -670,7 +732,7 @@ class App {
         this.renderSide();
       }, 30);
     };
-    body.querySelector('#restart').onclick = () => { if (confirm('Restart this lab from the beginning?')) this.startLab(lab); };
+    body.querySelector('#restart').onclick = () => this.confirmBox('Restart this lab?', 'Your changes to this lab will be lost.', 'Restart lab', () => this.startLab(lab));
     side.appendChild(body);
   }
 

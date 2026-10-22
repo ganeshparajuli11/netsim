@@ -17,3 +17,12 @@ html = html.replace('<script type="module" src="src/ui/app.js"></script>', () =>
 await mkdir('dist', { recursive: true });
 await writeFile('dist/opennetsim.html', html);
 console.log(`dist/opennetsim.html  ${(html.length / 1024).toFixed(0)} KB`);
+
+// Fragment for hosts that supply their own document skeleton (e.g. an embedded preview).
+const title = html.match(/<title>[\s\S]*?<\/title>/)[0];
+const links = (html.match(/<link [^>]*>/g) || []).join('\n');
+const styleBlock = html.match(/<style>[\s\S]*?<\/style>/)[0];
+const body = html.match(/<body>([\s\S]*)<\/body>/)[1];
+const fragment = `${title}\n<meta name="description" content="Open-source network simulator for learning.">\n${links}\n${styleBlock}\n${body}`;
+await writeFile('dist/opennetsim.fragment.html', fragment);
+console.log(`dist/opennetsim.fragment.html  ${(fragment.length / 1024).toFixed(0)} KB`);
