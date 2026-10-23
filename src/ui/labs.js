@@ -33,6 +33,28 @@ function hostIp(net, name) { return find(net, name)?.nic?.ip || null; }
 
 function ifaceIp(net, name, ifname) { return find(net, name)?.getIface?.(ifname)?.ip || null; }
 
+const isDefault = (r) => r.network === '0.0.0.0' && r.mask === '0.0.0.0';
+
+/** The static default route that uses the primary link, or null. */
+function primaryDefault(r1) {
+  return r1.staticRoutes.find((r) => isDefault(r) && (r.nextHop === '10.0.0.2' || (!r.nextHop && r.iface === 'GigabitEthernet0/1')) && (r.ad ?? 1) < 255) || null;
+}
+
+/** True when a default route over the backup link loses to the primary one. */
+function backupDefault(r1) {
+  const primary = primaryDefault(r1);
+  if (!primary) return false;
+  return r1.staticRoutes.some((r) => isDefault(r) && (r.nextHop === '10.0.1.2' || (!r.nextHop && r.iface === 'GigabitEthernet0/2')) && (r.ad ?? 1) > (primary.ad ?? 1) && (r.ad ?? 1) < 255);
+}
+
+/** A private copy of the network with one port shut down, to test failover. */
+function withPortDown(net, device, port) {
+  const copy = loadNetwork(serializeNetwork(net), new Network());
+  const p = copy.findDevice(device)?.getPort(port);
+  if (p) { p.shutdown = true; copy.notifyPort(p); }
+  return copy;
+}
+
 function settledHostIp(net, name) {
   const copy = loadNetwork(serializeNetwork(net), new Network());
   copy.settle(15000);
@@ -199,6 +221,47 @@ export const LABS = [
       { text: 'R1 has a static route to 172.16.2.0/24', fn: (n) => find(n, 'R1').staticRoutes.some((r) => r.network === '172.16.2.0') },
       { text: 'R2 has a static route to 172.16.1.0/24', fn: (n) => find(n, 'R2').staticRoutes.some((r) => r.network === '172.16.1.0') },
       { text: 'PC1 can ping PC2', fn: (n) => canReach(n, 'PC1', '172.16.2.10') },
+    ],
+  },
+  {
+    id: 'default-routes',
+    title: 'Default routes to the internet edge',
+    level: 'Intermediate',
+    summary: 'Send all unknown traffic to the provider, with a floating backup route.',
+    build(net) {
+      dev(net, 'router', 'R1', -150, 0);
+      dev(net, 'router', 'ISP', 150, 0);
+      dev(net, 'pc', 'PC1', -400, 0);
+      dev(net, 'server', 'Web', 400, 0);
+      wire(net, 'PC1', 'FastEthernet0', 'R1', 'GigabitEthernet0/0');
+      wire(net, 'R1', 'GigabitEthernet0/1', 'ISP', 'GigabitEthernet0/1');
+      wire(net, 'R1', 'GigabitEthernet0/2', 'ISP', 'GigabitEthernet0/2');
+      wire(net, 'Web', 'FastEthernet0', 'ISP', 'GigabitEthernet0/0');
+      const cfg = [['R1', 'GigabitEthernet0/0', '192.168.1.1', '255.255.255.0'], ['R1', 'GigabitEthernet0/1', '10.0.0.1', '255.255.255.252'],
+        ['R1', 'GigabitEthernet0/2', '10.0.1.1', '255.255.255.252'], ['ISP', 'GigabitEthernet0/1', '10.0.0.2', '255.255.255.252'],
+        ['ISP', 'GigabitEthernet0/2', '10.0.1.2', '255.255.255.252'], ['ISP', 'GigabitEthernet0/0', '203.0.113.1', '255.255.255.0']];
+      for (const [r, i, ip, m] of cfg) { const d = find(net, r); const f = d.getIface(i); f.ip = ip; f.mask = m; d.getPort(i).shutdown = false; net.notifyPort(d.getPort(i)); }
+      // the provider already routes back to the branch, with its own floating backup
+      find(net, 'ISP').staticRoutes = [
+        { network: '192.168.1.0', mask: '255.255.255.0', nextHop: '10.0.0.1', iface: null, ad: 1 },
+        { network: '192.168.1.0', mask: '255.255.255.0', nextHop: '10.0.1.1', iface: null, ad: 5 },
+      ];
+      find(net, 'PC1').setStatic({ ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Web').setStatic({ ip: '203.0.113.10', mask: '255.255.255.0', gateway: '203.0.113.1' });
+    },
+    guide: `<p>R1 is a branch router with two links to its internet provider. It cannot list every network on the internet, so it needs a <em>default route</em>: <code>0.0.0.0 0.0.0.0</code> matches any destination that no more specific route covers.</p>
+      <ol>
+        <li>On R1, run <code>show ip route</code>. It says <b>Gateway of last resort is not set</b>, so PC1 cannot reach Web (203.0.113.10).</li>
+        <li>Add the default route over the primary link: <code>ip route 0.0.0.0 0.0.0.0 10.0.0.2</code>. Check <code>show ip route</code> again and find the <code>S*</code> entry.</li>
+        <li>Add a <em>floating</em> backup over the second link with a higher administrative distance: <code>ip route 0.0.0.0 0.0.0.0 10.0.1.2 10</code>. It stays out of the routing table while the primary route works.</li>
+        <li>Ping Web from PC1. Then shut down R1's <code>G0/1</code> and look at <code>show ip route</code>: the backup route with distance 10 takes over.</li>
+      </ol>
+      <p class="note">Run <code>show running-config</code> on ISP to see how the provider does the same thing for the return path.</p>`,
+    checks: [
+      { text: 'R1 has a default route over the primary link (10.0.0.2)', fn: (n) => primaryDefault(find(n, 'R1')) !== null },
+      { text: 'R1 has a floating default route over the backup link with a higher distance', fn: (n) => backupDefault(find(n, 'R1')) },
+      { text: 'PC1 can ping Web', fn: (n) => canReach(n, 'PC1', '203.0.113.10') },
+      { text: 'PC1 still reaches Web when the primary link fails', fn: (n) => canReach(withPortDown(n, 'R1', 'GigabitEthernet0/1'), 'PC1', '203.0.113.10') },
     ],
   },
   {

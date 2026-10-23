@@ -77,6 +77,8 @@ export class L3Device extends Device {
     const viaConnected = (ip) => connectedOnly.find((r) => r.proto === 'C' && inSubnet(ip, r.network, r.mask));
 
     for (const s of this.staticRoutes) {
+      // distance 255 means "never trust this route": IOS keeps it in the config but never installs it
+      if ((s.ad ?? 1) >= 255) continue;
       if (s.iface) {
         const i = this.getIface(s.iface);
         if (i && this.ifaceUp(i)) all.push({ proto: 'S', network: s.network, mask: s.mask, iface: i, nextHop: s.nextHop || null, ad: s.ad ?? 1, metric: 0, exitIface: true });
@@ -102,6 +104,11 @@ export class L3Device extends Device {
       else if (r.ad === cur[0].ad && r.metric === cur[0].metric && r.proto !== 'C' && r.proto !== 'L') cur.push(r);
     }
     return [...best.values()].flat();
+  }
+
+  /** The installed default route (0.0.0.0/0), or null. Shown as "Gateway of last resort". */
+  gatewayOfLastResort(routes = this.routes()) {
+    return routes.find((r) => r.network === '0.0.0.0' && r.mask === '0.0.0.0') || null;
   }
 
   lookup(dst) {
@@ -298,6 +305,13 @@ export class L3Device extends Device {
     if (!this.filterOut(r.iface, pkt)) return;
     const via = r.nextHop !== pkt.dst ? ` via next hop ${r.nextHop}` : ' (directly connected)';
     this.explain(`routing table match ${r.route.network}/${maskToPrefix(r.route.mask)} [${r.route.proto}] → out ${r.iface.name}${via}; TTL now ${pkt.ttl}`);
+    if (r.route.network === '0.0.0.0' && r.route.mask === '0.0.0.0') {
+      this.explain(`no more specific route to ${pkt.dst}, so the default route (gateway of last resort) is used`);
+    }
+    if (r.route.proto === 'S' && r.route.ad > 1
+      && this.staticRoutes.some((s) => s.network === r.route.network && s.mask === r.route.mask && (s.ad ?? 1) < r.route.ad)) {
+      this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because the preferred route with a lower distance is not available`);
+    }
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);
       return;
