@@ -156,6 +156,7 @@ C.add('priv', ['show startup-config'], function () {
 C.add(EXEC, ['show ip interface brief', 'show ip int brief'], function () { this.showIpIntBrief(); });
 C.add(EXEC, ['show interfaces', 'show interfaces <if>'], function ([n]) { this.showInterfaces(n); });
 C.add(EXEC, ['show ip route', 'show ip route <ip>'], function ([ip]) { this.showIpRoute(ip); });
+C.add(EXEC, ['show ip route static|connected|rip'], function ([kind]) { this.showIpRoute(null, { static: 'S', connected: 'C', rip: 'R' }[kind]); });
 C.add(EXEC, ['show arp', 'show ip arp'], function () { this.showArp(); });
 C.add(EXEC, ['show cdp neighbors', 'show cdp neighbors detail'], function ([d]) { this.showCdp(); });
 C.add(EXEC, ['show mac address-table', 'show mac-address-table'], function () { this.need('switch') && this.showMacTable(); });
@@ -182,8 +183,9 @@ C.add('config', ['no banner motd'], function () { this.d.banner = ''; });
 C.add('config', ['interface <if>'], function ([n]) { this.enterInterface(n); });
 C.add('config', ['interface range <line>'], function ([r]) { this.enterRange(r); });
 C.add('config', ['no interface <if>'], function ([n]) { this.deleteInterface(n); });
-C.add('config', ['ip route <ip> <mask> <ip>', 'ip route <ip> <mask> <ip> <n>', 'ip route <ip> <mask> <if>', 'ip route <ip> <mask> <if> <ip>'], function (a) { this.need('router') && this.addRoute(a, false); });
-C.add('config', ['no ip route <ip> <mask> <ip>', 'no ip route <ip> <mask> <if>', 'no ip route <ip> <mask>'], function (a) { this.need('router') && this.addRoute(a, true); });
+const ROUTE_FORMS = ['<ip>', '<ip> <n>', '<if>', '<if> <n>', '<if> <ip>', '<if> <ip> <n>'];
+C.add('config', ROUTE_FORMS.map((f) => `ip route <ip> <mask> ${f}`), function (a) { this.need('router') && this.addRoute(a, false); });
+C.add('config', ['no ip route <ip> <mask>', ...ROUTE_FORMS.map((f) => `no ip route <ip> <mask> ${f}`)], function (a) { this.need('router') && this.addRoute(a, true); });
 C.add('config', ['ip default-gateway <ip>'], function ([gw]) { this.need('switch') && (this.d.defaultGateway = gw); });
 C.add('config', ['no ip default-gateway'], function () { this.d.defaultGateway = null; });
 C.add('config', ['ip dhcp pool <word>'], function ([n]) { this.need('router') && this.enterPool(n); });
@@ -559,17 +561,25 @@ export class IosCli {
   }
 
   addRoute(a, remove) {
-    const [network, mask, via, extra] = a;
+    const [network, mask, ...rest] = a;
     if (!isValidMask(mask)) { this.print('%Inconsistent address and mask\n'); return; }
     if (networkOf(network, mask) !== network) { this.print('%Inconsistent address and mask\n'); return; }
-    const isIp = via && isValidIp(via);
-    const route = { network, mask, nextHop: isIp ? via : (typeof extra === 'string' ? extra : null), iface: via && !isIp ? via : null, ad: typeof extra === 'number' ? extra : 1 };
-    if (route.iface && !this.d.getIface(route.iface)) { this.print('% Invalid interface\n'); return; }
+    // rest is [next hop], [next hop, distance], [interface], [interface, distance], [interface, next hop] or [interface, next hop, distance]
+    let iface = null, nextHop = null, ad = 1;
+    for (const x of rest) {
+      if (typeof x === 'number') ad = x;
+      else if (isValidIp(x)) nextHop = x;
+      else iface = x;
+    }
+    if (ad < 1 || ad > 255) { this.print('% Distance must be between 1 and 255\n'); return; }
+    if (iface && !this.d.getIface(iface)) { this.print('% Invalid interface\n'); return; }
     if (remove) {
-      this.d.staticRoutes = this.d.staticRoutes.filter((r) => !(r.network === network && r.mask === mask && (!via || r.nextHop === via || r.iface === via)));
+      // "no ip route" matches on prefix plus whatever path was given; the distance does not need to match
+      this.d.staticRoutes = this.d.staticRoutes.filter((r) => !(r.network === network && r.mask === mask
+        && (!nextHop || r.nextHop === nextHop) && (!iface || r.iface === iface)));
     } else {
-      this.d.staticRoutes = this.d.staticRoutes.filter((r) => !(r.network === network && r.mask === mask && r.nextHop === route.nextHop && r.iface === route.iface));
-      this.d.staticRoutes.push(route);
+      this.d.staticRoutes = this.d.staticRoutes.filter((r) => !(r.network === network && r.mask === mask && (r.nextHop || null) === nextHop && (r.iface || null) === iface));
+      this.d.staticRoutes.push({ network, mask, nextHop, iface, ad });
     }
     this.changed();
   }
@@ -749,7 +759,7 @@ Configuration register is 0x2102
     this.print(lines.join('\n') + '\n');
   }
 
-  showIpRoute(only) {
+  showIpRoute(only, protoFilter = null) {
     const d = this.d;
     if (d.type === 'switch') {
       this.print(d.defaultGateway ? `Default gateway is ${d.defaultGateway}\n\nHost               Gateway           Last Use    Total Uses  Interface\nICMP redirect cache is empty\n` : 'Default gateway is not set\n\nHost               Gateway           Last Use    Total Uses  Interface\nICMP redirect cache is empty\n');
@@ -760,7 +770,7 @@ Configuration register is 0x2102
        * - candidate default, U - per-user static route
 
 `;
-    const def = routes.find((r) => r.network === '0.0.0.0' && r.mask === '0.0.0.0');
+    const def = d.gatewayOfLastResort(routes);
     let out = legend + (def ? `Gateway of last resort is ${def.nextHop || '0.0.0.0'} to network 0.0.0.0\n\n` : 'Gateway of last resort is not set\n\n');
     const fmt = (r, indent) => {
       const code = (r.proto + (r.network === '0.0.0.0' && r.mask === '0.0.0.0' ? '*' : '')).padEnd(indent ? 9 : 6);
@@ -777,7 +787,15 @@ Configuration register is 0x2102
       const l = d.lookup(only);
       if (!l) { this.print('% Network not in table\n'); return; }
       const r = l.route;
-      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip' }[r.proto]}", distance ${r.ad}, metric ${r.metric}\n  Routing Descriptor Blocks:\n  * ${r.nextHop || 'directly connected'}, via ${r.iface.name}\n`);
+      const isDefault = r.network === '0.0.0.0' && r.mask === '0.0.0.0';
+      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}${isDefault ? ', supernet' : ''}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip' }[r.proto]}", distance ${r.ad}, metric ${r.metric}${isDefault ? ', candidate default path' : ''}\n  Routing Descriptor Blocks:\n  * ${r.nextHop || 'directly connected'}, via ${r.iface.name}\n`);
+      return;
+    }
+    if (protoFilter) {
+      // "show ip route static" and friends: same header, only the matching routes
+      const list = routes.filter((r) => r.proto === protoFilter || (protoFilter === 'C' && r.proto === 'L'));
+      list.sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || maskToPrefix(a.mask) - maskToPrefix(b.mask));
+      this.print(out + list.map((r) => fmt(r, false)).join('\n') + (list.length ? '\n' : ''));
       return;
     }
     // group by classful network, like IOS does

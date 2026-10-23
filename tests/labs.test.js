@@ -65,6 +65,11 @@ const SOLUTIONS = {
     ios(n.findDevice('R1')).run('en\nconf t\nip route 172.16.2.0 255.255.255.0 10.0.0.2\nend');
     ios(n.findDevice('R2')).run('en\nconf t\nip route 172.16.1.0 255.255.255.0 10.0.0.1\nend');
   },
+  'default-routes': (n) => ios(n.findDevice('R1')).run(`en
+      conf t
+      ip route 0.0.0.0 0.0.0.0 10.0.0.2
+      ip route 0.0.0.0 0.0.0.0 10.0.1.2 10
+      end`),
   rip: (n) => {
     for (const r of ['R1', 'R2', 'R3']) ios(n.findDevice(r)).run('en\nconf t\nrouter rip\nversion 2\nno auto-summary\nnetwork 10.0.0.0\nend');
   },

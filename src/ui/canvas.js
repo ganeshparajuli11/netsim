@@ -85,23 +85,34 @@ export class Canvas {
     this.linksLayer.textContent = '';
     this.devLayer.textContent = '';
     const showPorts = this.app.prefs.showPorts;
+    // several cables between the same two devices are drawn side by side instead of on top of each other
+    const pairKey = (l) => [l.a.device.id, l.b.device.id].sort().join('|');
+    const pairs = new Map();
+    for (const l of net.links.values()) { const k = pairKey(l); pairs.set(k, [...(pairs.get(k) || []), l]); }
     for (const l of net.links.values()) {
       const a = l.a.device, b = l.b.device;
       const g = el('g', { class: `link${this.selectedLink === l.id ? ' selected' : ''}`, 'data-link': l.id }, this.linksLayer);
-      el('line', { class: 'hit', x1: a.x, y1: a.y, x2: b.x, y2: b.y }, g);
-      el('line', { class: 'wire', x1: a.x, y1: a.y, x2: b.x, y2: b.y }, g);
       const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+      const group = pairs.get(pairKey(l));
+      // shift along a normal that does not depend on which end is "a", so siblings spread evenly
+      const flip = a.id < b.id ? 1 : -1;
+      const shift = (group.indexOf(l) - (group.length - 1) / 2) * 16;
+      const sx = -uy * flip * shift, sy = ux * flip * shift;
+      el('line', { class: 'hit', x1: a.x + sx, y1: a.y + sy, x2: b.x + sx, y2: b.y + sy }, g);
+      el('line', { class: 'wire', x1: a.x + sx, y1: a.y + sy, x2: b.x + sx, y2: b.y + sy }, g);
       for (const [port, dev, dir] of [[l.a, a, 1], [l.b, b, -1]]) {
         const dx = ux * dir, dy = uy * dir;
         // keep lights clear of the icon, and clear of the name/IP text when the cable leaves downwards
         const off = Math.max(34, Math.min(60, len * 0.25));
-        const lx = dev.x + dx * off, ly = dev.y + dy * off;
+        const lx = dev.x + dx * off + sx, ly = dev.y + dy * off + sy;
         el('circle', { class: `light ${this.lightState(port)}`, cx: lx, cy: ly, r: 5 }, g);
         if (showPorts) {
           // perpendicular offset, anchored away from the cable
           let px = -dy, py = dx;
           if (px < 0 || (px === 0 && py < 0)) { px = -px; py = -py; }
+          // side-by-side cables: put each label on the outside of the bundle
+          if (shift) { px = sx / Math.abs(shift); py = sy / Math.abs(shift); }
           const t = el('text', { class: 'port-label', x: lx + px * 10, y: ly + py * 10 + 4, 'text-anchor': Math.abs(px) > 0.35 ? 'start' : 'middle' }, g);
           t.textContent = shortPort(port.name);
         }
