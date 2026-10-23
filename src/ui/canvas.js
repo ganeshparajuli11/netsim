@@ -80,25 +80,34 @@ export class Canvas {
     return 'up';
   }
 
+  /**
+   * Several cables between the same two devices are drawn side by side instead of on top of each other.
+   * Returns the sideways shift for one link (also used to move packet envelopes along the right cable).
+   */
+  linkOffset(link) {
+    if (!link) return { sx: 0, sy: 0, shift: 0 };
+    const a = link.a.device, b = link.b.device;
+    const group = [...this.net.links.values()].filter((l) => (l.a.device === a && l.b.device === b) || (l.a.device === b && l.b.device === a));
+    if (group.length < 2) return { sx: 0, sy: 0, shift: 0 };
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    // shift along a normal that does not depend on which end is "a", so siblings spread evenly
+    const flip = a.id < b.id ? 1 : -1;
+    const shift = (group.indexOf(link) - (group.length - 1) / 2) * 16;
+    return { sx: -uy * flip * shift, sy: ux * flip * shift, shift };
+  }
+
   render() {
     const net = this.net;
     this.linksLayer.textContent = '';
     this.devLayer.textContent = '';
     const showPorts = this.app.prefs.showPorts;
-    // several cables between the same two devices are drawn side by side instead of on top of each other
-    const pairKey = (l) => [l.a.device.id, l.b.device.id].sort().join('|');
-    const pairs = new Map();
-    for (const l of net.links.values()) { const k = pairKey(l); pairs.set(k, [...(pairs.get(k) || []), l]); }
     for (const l of net.links.values()) {
       const a = l.a.device, b = l.b.device;
       const g = el('g', { class: `link${this.selectedLink === l.id ? ' selected' : ''}`, 'data-link': l.id }, this.linksLayer);
       const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
-      const group = pairs.get(pairKey(l));
-      // shift along a normal that does not depend on which end is "a", so siblings spread evenly
-      const flip = a.id < b.id ? 1 : -1;
-      const shift = (group.indexOf(l) - (group.length - 1) / 2) * 16;
-      const sx = -uy * flip * shift, sy = ux * flip * shift;
+      const { sx, sy, shift } = this.linkOffset(l);
       el('line', { class: 'hit', x1: a.x + sx, y1: a.y + sy, x2: b.x + sx, y2: b.y + sy }, g);
       el('line', { class: 'wire', x1: a.x + sx, y1: a.y + sy, x2: b.x + sx, y2: b.y + sy }, g);
       for (const [port, dev, dir] of [[l.a, a, 1], [l.b, b, -1]]) {
@@ -113,7 +122,8 @@ export class Canvas {
           if (px < 0 || (px === 0 && py < 0)) { px = -px; py = -py; }
           // side-by-side cables: put each label on the outside of the bundle
           if (shift) { px = sx / Math.abs(shift); py = sy / Math.abs(shift); }
-          const t = el('text', { class: 'port-label', x: lx + px * 10, y: ly + py * 10 + 4, 'text-anchor': Math.abs(px) > 0.35 ? 'start' : 'middle' }, g);
+          const anchor = px > 0.35 ? 'start' : px < -0.35 ? 'end' : 'middle';
+          const t = el('text', { class: 'port-label', x: lx + px * 10, y: ly + py * 10 + 4, 'text-anchor': anchor }, g);
           t.textContent = shortPort(port.name);
         }
       }

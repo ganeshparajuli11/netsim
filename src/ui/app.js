@@ -400,7 +400,8 @@ class App {
     const list = frames || this.visibleFrames(this.net.pendingFrames().frames);
     this.canvas.drawPdus(list.map((e) => {
       const a = e.meta.from.device, b = e.meta.to.device;
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, protocol: protocolGroup(protocolOf(e.meta.frame)) };
+      const { sx, sy } = this.canvas.linkOffset(e.meta.link || e.meta.from.link);
+      return { x: a.x + (b.x - a.x) * t + sx, y: a.y + (b.y - a.y) * t + sy, protocol: protocolGroup(protocolOf(e.meta.frame)) };
     }));
   }
 
