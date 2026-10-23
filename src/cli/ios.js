@@ -156,7 +156,7 @@ C.add('priv', ['show startup-config'], function () {
 C.add(EXEC, ['show ip interface brief', 'show ip int brief'], function () { this.showIpIntBrief(); });
 C.add(EXEC, ['show interfaces', 'show interfaces <if>'], function ([n]) { this.showInterfaces(n); });
 C.add(EXEC, ['show ip route', 'show ip route <ip>'], function ([ip]) { this.showIpRoute(ip); });
-C.add(EXEC, ['show ip route static|connected|rip'], function ([kind]) { this.showIpRoute(null, { static: 'S', connected: 'C', rip: 'R' }[kind]); });
+C.add(EXEC, ['show ip route static|connected|rip'], function ([kind]) { this.need('router') && this.showIpRoute(null, { static: 'S', connected: 'C', rip: 'R' }[kind]); });
 C.add(EXEC, ['show arp', 'show ip arp'], function () { this.showArp(); });
 C.add(EXEC, ['show cdp neighbors', 'show cdp neighbors detail'], function ([d]) { this.showCdp(); });
 C.add(EXEC, ['show mac address-table', 'show mac-address-table'], function () { this.need('switch') && this.showMacTable(); });
@@ -571,7 +571,7 @@ export class IosCli {
       else if (isValidIp(x)) nextHop = x;
       else iface = x;
     }
-    if (ad < 1 || ad > 255) { this.print('% Distance must be between 1 and 255\n'); return; }
+    if (!remove && (ad < 1 || ad > 255)) { this.print('% Distance must be between 1 and 255\n'); return; }
     if (iface && !this.d.getIface(iface)) { this.print('% Invalid interface\n'); return; }
     if (remove) {
       // "no ip route" matches on prefix plus whatever path was given; the distance does not need to match

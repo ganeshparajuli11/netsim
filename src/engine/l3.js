@@ -308,8 +308,9 @@ export class L3Device extends Device {
     if (r.route.network === '0.0.0.0' && r.route.mask === '0.0.0.0') {
       this.explain(`no more specific route to ${pkt.dst}, so the default route (gateway of last resort) is used`);
     }
-    if (r.route.proto === 'S' && r.route.ad > 1) {
-      this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because no route with a lower distance is available`);
+    if (r.route.proto === 'S' && r.route.ad > 1
+      && this.staticRoutes.some((s) => s.network === r.route.network && s.mask === r.route.mask && (s.ad ?? 1) < r.route.ad)) {
+      this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because the preferred route with a lower distance is not available`);
     }
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);

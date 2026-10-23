@@ -62,13 +62,31 @@ test('a floating static route waits until the preferred route disappears', () =>
 
 test('simulation mode explains default and floating route decisions', () => {
   const { net, t } = edge();
-  t.run('ip route 0.0.0.0 0.0.0.0 10.0.1.2 10\nint g0/1\nshutdown\nexit');
+  t.run('ip route 0.0.0.0 0.0.0.0 10.0.0.2\nip route 0.0.0.0 0.0.0.0 10.0.1.2 10\nint g0/1\nshutdown\nexit');
   pingOk(net, 'PC1', '203.0.113.10');
   net.recording = true;
   cmd(net.findDevice('PC1')).run('ping -n 1 203.0.113.10', net);
   const notes = net.events.flatMap((e) => e.notes);
   assert.ok(notes.some((n) => /R1: .*default route \(gateway of last resort\)/.test(n)), notes.join('\n'));
   assert.ok(notes.some((n) => /R1: this is a floating static route \(distance 10\)/.test(n)));
+});
+
+test('a lone static route with a higher distance is not called floating', () => {
+  const { net, t } = edge();
+  t.run('ip route 0.0.0.0 0.0.0.0 10.0.1.2 10');
+  pingOk(net, 'PC1', '203.0.113.10');
+  net.recording = true;
+  cmd(net.findDevice('PC1')).run('ping -n 1 203.0.113.10', net);
+  const notes = net.events.flatMap((e) => e.notes);
+  assert.ok(notes.some((n) => /R1: .*default route/.test(n)));
+  assert.ok(!notes.some((n) => /floating/.test(n)));
+});
+
+test('filtered show ip route is a router command', () => {
+  const net = new Network();
+  const sw = loadNetwork({ devices: [{ id: 'D1', type: 'switch', name: 'S1', x: 0, y: 0, config: {} }], links: [] }, net).findDevice('S1');
+  const o = ios(sw).run('en\nshow ip route static');
+  assert.doesNotMatch(o, /Default gateway/);
 });
 
 test('static route forms, distance limits, removal and running-config', () => {
@@ -83,6 +101,7 @@ test('static route forms, distance limits, removal and running-config', () => {
 
   assert.match(t.run('ip route 10.9.0.0 255.255.0.0 10.0.0.2 0'), /Distance must be between 1 and 255/);
   assert.match(t.run('ip route 10.9.0.0 255.255.0.0 10.0.0.2 256'), /Distance must be between 1 and 255/);
+  assert.ok(!r1.staticRoutes.some((r) => r.network === '10.9.0.0'), 'rejected distances must not be stored');
 
   // distance 255: kept in the config, never installed
   t.run('ip route 10.9.0.0 255.255.0.0 10.0.0.2 255');
@@ -98,7 +117,7 @@ test('static route forms, distance limits, removal and running-config', () => {
   t.run('ip route 10.9.0.0 255.255.0.0 10.0.0.2 7');
   assert.equal(r1.staticRoutes.filter((r) => r.network === '10.9.0.0').length, 1);
   assert.equal(r1.staticRoutes.find((r) => r.network === '10.9.0.0').ad, 7);
-  t.run('no ip route 10.9.0.0 255.255.0.0 10.0.0.2 7');
+  t.run('no ip route 10.9.0.0 255.255.0.0 10.0.0.2 30');
   t.run('no ip route 0.0.0.0 0.0.0.0 g0/1');
   assert.ok(!r1.staticRoutes.some((r) => r.network === '10.9.0.0' || r.network === '0.0.0.0'));
 });
