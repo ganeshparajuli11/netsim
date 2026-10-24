@@ -1,8 +1,9 @@
-// Router: routed interfaces, 802.1Q sub-interfaces, static routes, RIPv2, DHCP server/relay, standard ACLs.
+// Router: routed interfaces, 802.1Q sub-interfaces, static routes, RIPv2, OSPF neighbours, DHCP server/relay, ACLs.
 
 import { L3Device } from './l3.js';
 import { DhcpServer } from './dhcp.js';
 import { Rip } from './rip.js';
+import { Ospf } from './ospf.js';
 import { Acl } from './acl.js';
 
 export class Router extends L3Device {
@@ -24,6 +25,7 @@ export class Router extends L3Device {
     this.startupConfig = null;
     this.dhcpServer = new DhcpServer(this);
     this.rip = new Rip(this);
+    this.ospf = new Ospf(this);
     this.acl = new Acl(this);
     this.udpHandlers.set(67, (iface, pkt) => this.onDhcp(iface, pkt));
     this.udpHandlers.set(520, (iface, pkt) => this.rip.receive(iface, pkt));
@@ -53,6 +55,8 @@ export class Router extends L3Device {
     const up = this.ifaceUp(i);
     return { status: i.port.isUp() ? 'up' : 'down', protocol: up ? 'up' : 'down' };
   }
+
+  onOspf(iface, pkt) { this.ospf.receive(iface, pkt); }
 
   filterIn(iface, pkt) { return this.acl.check(iface, 'in', pkt); }
   filterOut(iface, pkt) { return this.acl.check(iface, 'out', pkt); }
@@ -87,19 +91,22 @@ export class Router extends L3Device {
     this.syslog(`%LINK-${up ? 3 : 5}-CHANGED: Interface ${port.name}, changed state to ${state}`);
     if (!port.shutdown || !up) this.syslog(`%LINEPROTO-5-UPDOWN: Line protocol on Interface ${port.name}, changed state to ${up ? 'up' : 'down'}`);
     this.rip.topologyChanged();
+    this.ospf.topologyChanged();
   }
 
   /** Factory defaults (used by reload without a startup-config). */
   resetConfig() {
     this.ifaces = this.ifaces.filter((i) => !i.parent);
     for (const i of this.ifaces) {
-      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null });
+      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null, ospf: undefined });
       i.port.shutdown = true;
     }
     this.staticRoutes = [];
     this.rip.disable();
+    this.ospf.disable();
     this.dhcpServer = new DhcpServer(this);
     this.rip = new Rip(this);
+    this.ospf = new Ospf(this);
     this.acl = new Acl(this);
     this.enableSecret = null;
     this.enablePassword = null;
@@ -119,10 +126,12 @@ export class Router extends L3Device {
         shutdown: i.parent ? i.shutdown : i.port.shutdown, vlan: i.vlan, nativeVlan: !!i.nativeVlan,
         sub: !!i.parent, mac: i.mac, helpers: i.helpers || [], aclIn: i.aclIn || null, aclOut: i.aclOut || null,
         rip: i.ripPassive ? { passive: true } : undefined,
+        ospf: i.ospf && Object.keys(i.ospf).length ? { ...i.ospf } : undefined,
       })),
       staticRoutes: this.staticRoutes,
       dhcp: this.dhcpServer.save(),
       rip: this.rip.save(),
+      ospf: this.ospf.enabled ? this.ospf.save() : undefined,
       acls: this.acl.save(),
       startupConfig: this.startupConfig,
       powered: this.powered,
@@ -144,6 +153,7 @@ export class Router extends L3Device {
       i.aclIn = ic.aclIn || null;
       i.aclOut = ic.aclOut || null;
       i.ripPassive = !!ic.rip?.passive;
+      i.ospf = ic.ospf ? { ...ic.ospf } : undefined;
       if (ic.sub) { i.shutdown = !!ic.shutdown; i.vlan = ic.vlan ?? null; i.nativeVlan = !!ic.nativeVlan; }
       else {
         i.port.shutdown = !!ic.shutdown;
@@ -154,6 +164,7 @@ export class Router extends L3Device {
     this.staticRoutes = c.staticRoutes || [];
     if (c.dhcp) this.dhcpServer.load(c.dhcp);
     if (c.rip) this.rip.load(c.rip);
+    if (c.ospf) this.ospf.load(c.ospf);
     if (c.acls) this.acl.load(c.acls);
     this.startupConfig = c.startupConfig || null;
   }

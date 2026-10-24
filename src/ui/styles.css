@@ -25,6 +25,7 @@
   --p-dhcp: #8a3fb8;
   --p-dns: #0f8a8a;
   --p-rip: #b4532a;
+  --p-ospf: #a3346b;
   --p-http: #2e7d32;
   --p-other: #6b7785;
   --ui: 'Atkinson Hyperlegible', system-ui, sans-serif;
@@ -37,7 +38,7 @@
     --paper: #16202b; --grid: #2a3a4b; --panel: #1d2935; --panel-2: #22303e; --line: #31424f;
     --ink: #e4ebf2; --ink-2: #a9b7c6; --ink-3: #7d8d9e; --accent: #6f9cff; --accent-ink: #0d1a2c; --accent-soft: #24365a;
     --cable: #8fa8c4; --device-fill: #22303e; --device-stroke: #c9d6e3; --term-bg: #0d151e;
-    --shadow: 0 10px 30px rgba(0, 0, 0, .45); --p-icmp: #6f9cff; --p-arp: #e0a826; --p-dhcp: #b47ae0; --p-dns: #3cc0c0; --p-rip: #e08155; --p-http: #5cbf62;
+    --shadow: 0 10px 30px rgba(0, 0, 0, .45); --p-icmp: #6f9cff; --p-arp: #e0a826; --p-dhcp: #b47ae0; --p-dns: #3cc0c0; --p-rip: #e08155; --p-ospf: #e06fa6; --p-http: #5cbf62;
     color-scheme: dark;
   }
 }
@@ -45,7 +46,7 @@
   --paper: #16202b; --grid: #2a3a4b; --panel: #1d2935; --panel-2: #22303e; --line: #31424f;
   --ink: #e4ebf2; --ink-2: #a9b7c6; --ink-3: #7d8d9e; --accent: #6f9cff; --accent-ink: #0d1a2c; --accent-soft: #24365a;
   --cable: #8fa8c4; --device-fill: #22303e; --device-stroke: #c9d6e3; --term-bg: #0d151e;
-  --shadow: 0 10px 30px rgba(0, 0, 0, .45); --p-icmp: #6f9cff; --p-arp: #e0a826; --p-dhcp: #b47ae0; --p-dns: #3cc0c0; --p-rip: #e08155; --p-http: #5cbf62;
+  --shadow: 0 10px 30px rgba(0, 0, 0, .45); --p-icmp: #6f9cff; --p-arp: #e0a826; --p-dhcp: #b47ae0; --p-dns: #3cc0c0; --p-rip: #e08155; --p-ospf: #e06fa6; --p-http: #5cbf62;
   color-scheme: dark;
 }
 

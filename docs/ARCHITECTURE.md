@@ -2,7 +2,7 @@
 
 ## The clock
 
-`Network` keeps a priority queue of events ordered by simulated time. When a device puts a frame on a cable (`net.transmit(port, frame)`), that schedules a delivery one hop-delay later (1 ms). Timers (ARP timeouts, ping intervals, DHCP retries, RIP updates) use the same queue.
+`Network` keeps a priority queue of events ordered by simulated time. When a device puts a frame on a cable (`net.transmit(port, frame)`), that schedules a delivery one hop-delay later (1 ms). Timers (ARP timeouts, ping intervals, DHCP retries, RIP updates, OSPF hello and dead timers) use the same queue.
 
 - **Realtime mode:** every animation frame, the UI advances the clock by the real elapsed time.
 - **Simulation mode:** the clock stands still. *Step* delivers the next batch of frames that arrive at the same instant, running any timers due before them. While a batch is being delivered, `net.current` holds an event record, and devices add sentences to it with `explain()`. Those records become the event list and the packet inspector.
@@ -18,6 +18,7 @@ Frames are plain objects, `{ src, dst, type: 'ARP'|'IPv4', vlan?, payload }`. Th
   - Hosts queue packets while ARP resolves.
   - Routers drop the first one, which is why the first echo of a ping through a router often times out, just as on real routers.
 - `Switch` overrides frame reception with learning and forwarding, and lets its own SVI inject frames into the switching fabric.
+- OSPF (`ospf.js`) keeps per-interface state (timers, DR, BDR, neighbours). Hellos go to 224.0.0.5 as IP protocol `OSPF`; neighbours move through INIT, 2WAY, EXSTART and FULL as in RFC 2328. Database descriptions carry no LSAs yet, so two routers are in sync as soon as their DBDs cross; DBDs are resent every 5 s until answered.
 - Spanning tree (`stp.js`) computes roles with 802.1D rules (lowest bridge ID wins root, lowest cost wins the root port, lowest sender wins the designated port) whenever the topology changes. It doesn't flood hello BPDUs, which keeps simulation mode readable.
 
 ## CLI

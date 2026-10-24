@@ -328,6 +328,10 @@ export class L3Device extends Device {
       return;
     }
     if (pkt.proto === 'TCP') return this.onTcp?.(iface, pkt);
+    if (pkt.proto === 'OSPF') {
+      if (this.onOspf) return this.onOspf(iface, pkt);
+      this.explain('OSPF packet ignored (this device does not run OSPF)');
+    }
   }
 
   handleIcmp(iface, pkt) {

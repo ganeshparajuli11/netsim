@@ -140,6 +140,11 @@ C.add('priv', 'reload', function () { this.reload(); });
 C.add('priv', ['clear arp-cache', 'clear ip arp'], function () { this.d.clearArp(); });
 C.add('priv', ['clear mac address-table', 'clear mac address-table dynamic', 'clear mac-address-table dynamic'], function () { this.d.macTable?.clear(); });
 C.add('priv', ['clear ip route *', 'clear ip route'], function () { if (this.d.rip) { this.d.rip.routes.clear(); this.d.rip.sync(); this.d.rip.triggerUpdate(); } });
+C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function () {
+  if (!this.need('router')) return;
+  this.print('Reset ALL OSPF processes? [no]: yes\n');
+  this.d.ospf.restart();
+});
 C.add('priv', ['clear access-list counters'], function () { if (this.d.acl) for (const l of this.d.acl.lists.values()) for (const r of l) r.hits = 0; });
 C.add(EXEC, ['terminal length <n>', 'terminal monitor', 'terminal no monitor'], function () {});
 C.add(EXEC, ['show version'], function () { this.showVersion(); });
@@ -167,6 +172,7 @@ C.add(EXEC, ['show spanning-tree', 'show spanning-tree vlan <n>'], function () {
 C.add(EXEC, ['show ip dhcp binding'], function () { this.need('router') && this.showDhcpBinding(); });
 C.add(EXEC, ['show ip dhcp pool'], function () { this.need('router') && this.showDhcpPool(); });
 C.add(EXEC, ['show access-lists', 'show ip access-lists', 'show access-lists <n>'], function ([n]) { this.need('router') && this.showAcl(n); });
+C.add(EXEC, ['show ip ospf neighbor', 'show ip ospf neighbor <if>'], function ([n]) { this.need('router') && this.showOspfNeighbors(n); });
 C.add(EXEC, ['show ip protocols'], function () { this.need('router') && this.showProtocols(); });
 
 // ---------- global config ----------
@@ -195,7 +201,21 @@ C.add('config', ['no ip dhcp excluded-address <ip>', 'no ip dhcp excluded-addres
 C.add('config', ['service dhcp', 'no service dhcp'], function () {});
 C.add('config', ['vlan <n>'], function ([n]) { this.need('switch') && this.enterVlan(n); });
 C.add('config', ['no vlan <n>'], function ([n]) { this.need('switch') && this.deleteVlan(n); });
-C.add('config', ['router rip'], function () { if (this.need('router')) { this.d.rip.enable(); this.mode = 'config-router'; } });
+C.add('config', ['router rip'], function () { if (this.need('router')) { this.d.rip.enable(); this.mode = 'config-router'; this.ctx = { proto: 'rip' }; } });
+C.add('config', ['router ospf <n>'], function ([pid]) {
+  if (!this.need('router')) return;
+  if (pid < 1 || pid > 65535) { this.print('% Process ID must be between 1 and 65535\n'); return; }
+  const o = this.d.ospf;
+  if (o.enabled && o.processId !== pid) { this.print(`% This simulator runs one OSPF process per router; process ${o.processId} is already running\n`); return; }
+  o.enable(pid);
+  if (!o.routerId) this.print('%OSPF-4-NORTRID: OSPF process cannot pick a router-id. Configure an interface address or use "router-id"\n');
+  this.mode = 'config-router';
+  this.ctx = { proto: 'ospf' };
+});
+C.add('config', ['no router ospf <n>'], function ([pid]) {
+  if (!this.need('router')) return;
+  if (this.d.ospf.enabled && this.d.ospf.processId === pid) this.d.ospf.disable();
+});
 C.add('config', ['no router rip'], function () { this.need('router') && this.d.rip.disable(); });
 C.add('config', ['access-list <n> <line>'], function ([n, rest]) { this.need('router') && this.addAcl(n, rest); });
 C.add('config', ['no access-list <n>'], function ([n]) { this.need('router') && this.d.acl.remove(n); });
@@ -226,7 +246,24 @@ C.add(IF_MODES, ['shutdown'], function () { this.eachIface((i) => this.setShutdo
 C.add(IF_MODES, ['no shutdown'], function () { this.eachIface((i) => this.setShutdown(i, false)); });
 C.add(IF_MODES, ['description <line>'], function ([t]) { this.eachIface((i) => { i.description = t; if (i.port?.sw) i.port.sw.description = t; }); });
 C.add(IF_MODES, ['no description'], function () { this.eachIface((i) => { i.description = ''; if (i.port?.sw) i.port.sw.description = ''; }); });
-C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'switchport port-security', 'cdp enable', 'no cdp enable', 'ip ospf <line>', 'bandwidth <n>', 'clock rate <n>'], function () {});
+C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'switchport port-security', 'cdp enable', 'no cdp enable', 'bandwidth <n>', 'clock rate <n>'], function () {});
+const OSPF_IF = { 'hello-interval': ['hello', 1, 65535], 'dead-interval': ['dead', 1, 65535], priority: ['priority', 0, 255] };
+C.add(['config-if', 'config-subif'], ['ip ospf hello-interval|dead-interval|priority <n>'], function ([kind, v]) {
+  if (!this.need('router')) return;
+  const [key, lo, hi] = OSPF_IF[kind];
+  if (v < lo || v > hi) { this.print(`% Value must be between ${lo} and ${hi}\n`); return; }
+  const i = this.ctx.iface;
+  i.ospf = { ...(i.ospf || {}), [key]: v };
+  this.d.ospf.topologyChanged();
+});
+C.add(['config-if', 'config-subif'], ['no ip ospf hello-interval|dead-interval|priority', 'no ip ospf hello-interval|dead-interval|priority <n>'], function ([kind]) {
+  if (!this.need('router')) return;
+  const i = this.ctx.iface;
+  const o = { ...(i.ospf || {}) };
+  delete o[OSPF_IF[kind][0]];
+  i.ospf = Object.keys(o).length ? o : undefined;
+  this.d.ospf.topologyChanged();
+});
 C.add('config-subif', ['encapsulation dot1q <n>', 'encapsulation dot1q <n> native'], function ([v]) {
   const i = this.ctx.iface;
   if (this.d.ifaces.some((o) => o !== i && o.parent === i.parent && o.vlan === v)) { this.print(`% Configuration of multiple subinterfaces of the same main\n% interface with the same VID (${v}) is not permitted.\n`); return; }
@@ -266,15 +303,42 @@ C.add('dhcp-config', ['no default-router', 'no dns-server', 'no network'], funct
   else { this.ctx.pool.network = null; this.ctx.pool.mask = null; }
 });
 
-// ---------- router rip ----------
-C.add('config-router', ['version <n>'], function ([v]) { this.d.rip.version = v; if (v !== 2) this.print('% This simulator implements RIP version 2 only (classless updates)\n'); });
-C.add('config-router', ['network <ip>'], function ([ip]) { this.d.rip.addNetwork(ip); });
-C.add('config-router', ['no network <ip>'], function ([ip]) { this.d.rip.removeNetwork(ip); });
-C.add('config-router', ['passive-interface <if>'], function ([n]) { this.d.rip.passive.add(n); });
-C.add('config-router', ['no passive-interface <if>'], function ([n]) { this.d.rip.passive.delete(n); });
-C.add('config-router', ['no auto-summary'], function () { this.d.rip.autoSummary = false; });
-C.add('config-router', ['auto-summary'], function () { this.d.rip.autoSummary = true; });
+// ---------- router rip / router ospf ----------
+// Both use the config-router mode; ctx.proto says which process the commands apply to.
+function ripOnly(fn) {
+  return function (...a) {
+    if (this.ctx.proto === 'ospf') { this.print(/^\s*n/i.test(this.lastLine) ? '% Incomplete command.\n' : '% Invalid input detected for OSPF.\n'); return; }
+    fn.apply(this, a);
+  };
+}
+function ospfOnly(fn) {
+  return function (...a) {
+    if (this.ctx.proto !== 'ospf') { this.print('% Invalid input detected for RIP.\n'); return; }
+    fn.apply(this, a);
+  };
+}
+C.add('config-router', ['version <n>'], ripOnly(function ([v]) { this.d.rip.version = v; if (v !== 2) this.print('% This simulator implements RIP version 2 only (classless updates)\n'); }));
+C.add('config-router', ['network <ip>'], ripOnly(function ([ip]) { this.d.rip.addNetwork(ip); }));
+C.add('config-router', ['no network <ip>'], ripOnly(function ([ip]) { this.d.rip.removeNetwork(ip); }));
+C.add('config-router', ['passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') this.d.ospf.setPassive(n, true); else this.d.rip.passive.add(n); });
+C.add('config-router', ['no passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') this.d.ospf.setPassive(n, false); else this.d.rip.passive.delete(n); });
+C.add('config-router', ['no auto-summary'], function () { if (this.ctx.proto !== 'ospf') this.d.rip.autoSummary = false; });
+C.add('config-router', ['auto-summary'], ripOnly(function () { this.d.rip.autoSummary = true; }));
 C.add('config-router', ['default-information originate', 'redistribute <line>'], function () { this.print('% Not supported in this simulator yet\n'); });
+const areaNum = (a) => (typeof a === 'number' ? a : ipToInt(a));
+C.add('config-router', ['network <ip> <ip> area <n>', 'network <ip> <ip> area <ip>'], ospfOnly(function ([ip, wc, area]) {
+  const err = this.d.ospf.addNetwork(ip, wc, areaNum(area));
+  if (err) this.print(`${err}\n`);
+}));
+C.add('config-router', ['no network <ip> <ip> area <n>', 'no network <ip> <ip> area <ip>', 'no network <ip> <ip>'], ospfOnly(function ([ip, wc]) { this.d.ospf.removeNetwork(ip, wc); }));
+C.add('config-router', ['router-id <ip>'], ospfOnly(function ([rid]) {
+  if (rid === '0.0.0.0') { this.print('% OSPF: router-id 0.0.0.0 is not allowed\n'); return; }
+  if (!this.d.ospf.setRouterId(rid)) this.print('% OSPF: Reload or use "clear ip ospf process" command, for this to take effect\n');
+}));
+C.add('config-router', ['no router-id'], ospfOnly(function () {
+  if (!this.d.ospf.clearRouterId()) this.print('% OSPF: Reload or use "clear ip ospf process" command, for this to take effect\n');
+}));
+C.add('config-router', ['log-adjacency-changes', 'log-adjacency-changes detail'], ospfOnly(function () {}));
 
 // 'do' lets any exec command run from config modes
 C.add(CONFIG_MODES, ['do <line>'], function ([rest]) {
@@ -401,7 +465,10 @@ export class IosCli {
     return null;
   }
 
-  changed() { this.d.net?.emit('config', this.d); }
+  changed() {
+    this.d.ospf?.topologyChanged(); // cheap: only (re)starts interfaces whose OSPF state changed
+    this.d.net?.emit('config', this.d);
+  }
 
   syslogConfigured() {
     this.print(`%SYS-5-CONFIG_I: Configured from console by console\n`);
@@ -500,6 +567,7 @@ export class IosCli {
     i.mask = mask;
     this.d.clearArp(i);
     this.d.rip?.topologyChanged();
+    this.d.ospf?.topologyChanged();
     this.changed();
   }
 
@@ -512,6 +580,7 @@ export class IosCli {
       d.syslog(`%LINK-5-CHANGED: Interface ${i.name}, changed state to ${shut ? 'administratively down' : up ? 'up' : 'down'}`);
       if (!shut && up) d.syslog(`%LINEPROTO-5-UPDOWN: Line protocol on Interface ${i.name}, changed state to up`);
       d.rip?.topologyChanged();
+      d.ospf?.topologyChanged();
       this.changed();
       return;
     }
@@ -960,6 +1029,17 @@ Interface        Role Sts Cost      Prio.Nbr Type
     this.print(out || '\n');
   }
 
+  showOspfNeighbors(only) {
+    const o = this.d.ospf;
+    if (!o.enabled) { this.print('\n'); return; }
+    const rows = o.neighborRows().filter((r) => !only || r.iface.toLowerCase() === only.toLowerCase());
+    let out = '\nNeighbor ID     Pri   State           Dead Time   Address         Interface\n';
+    for (const r of rows) {
+      out += `${r.rid.padEnd(16)}${String(r.priority).padStart(3)}   ${r.state.padEnd(16)}${uptime(r.dead).padEnd(12)}${r.ip.padEnd(16)}${r.iface}\n`;
+    }
+    this.print(out);
+  }
+
   showProtocols() {
     const rip = this.d.rip;
     if (!rip.enabled) { this.print('\n'); return; }
@@ -1010,6 +1090,9 @@ Default version control: send version 2, receive 2
         for (const h of i.helpers || []) L.push(` ip helper-address ${h}`);
         if (i.aclIn) L.push(` ip access-group ${i.aclIn} in`);
         if (i.aclOut) L.push(` ip access-group ${i.aclOut} out`);
+        if (i.ospf?.hello !== undefined) L.push(` ip ospf hello-interval ${i.ospf.hello}`);
+        if (i.ospf?.dead !== undefined) L.push(` ip ospf dead-interval ${i.ospf.dead}`);
+        if (i.ospf?.priority !== undefined) L.push(` ip ospf priority ${i.ospf.priority}`);
         if (!i.parent) L.push(' duplex auto', ' speed auto');
         if (i.parent ? i.shutdown : i.port.shutdown) L.push(' shutdown');
         L.push('!');
@@ -1020,6 +1103,14 @@ Default version control: send version 2, receive 2
         for (const p of d.rip.passive) L.push(` passive-interface ${p}`);
         for (const n of d.rip.networks) L.push(` network ${n}`);
         if (!d.rip.autoSummary) L.push(' no auto-summary');
+        L.push('!');
+      }
+      if (d.ospf.enabled) {
+        L.push(`router ospf ${d.ospf.processId}`);
+        if (d.ospf.routerIdConfigured) L.push(` router-id ${d.ospf.routerIdConfigured}`);
+        L.push(' log-adjacency-changes');
+        for (const p of d.ospf.passive) L.push(` passive-interface ${p}`);
+        for (const n of d.ospf.networks) L.push(` network ${n.ip} ${n.wildcard} area ${n.area}`);
         L.push('!');
       }
       L.push('ip classless');

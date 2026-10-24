@@ -268,6 +268,7 @@ export function protocolOf(frame) {
       if (t.dstPort === 80 || t.srcPort === 80) return 'HTTP';
       return 'TCP';
     }
+    if (ip.proto === 'OSPF') return 'OSPF';
     return 'IPv4';
   }
   return frame.type || '?';
@@ -288,6 +289,7 @@ export function summarize(frame) {
     if (p === 'DHCP') return `DHCP ${ip.payload.payload.msg}`;
     if (p === 'DNS') return `DNS ${ip.payload.payload.qr ? 'response' : 'query'} ${ip.payload.payload.name}`;
     if (p === 'RIP') return `RIP update from ${ip.src}`;
+    if (p === 'OSPF') return ip.payload.type === 'Hello' ? `OSPF hello from ${ip.payload.routerId}` : `OSPF database description from ${ip.payload.routerId}`;
     if (p === 'HTTP') return `HTTP ${ip.payload.payload.method || ip.payload.payload.status || ''}`;
     return `${ip.src} → ${ip.dst} ${ip.proto}`;
   }
