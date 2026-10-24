@@ -10,12 +10,12 @@ There's no install, no account and no server. Open `index.html` through any stat
 |---|---|
 | Devices | Router (3 × Gigabit), switch (24 × Fast Ethernet + 2 × Gigabit), hub, PC, laptop, server |
 | Layer 2 | MAC learning and flooding, VLANs, access and 802.1Q trunk ports, native VLAN, allowed-VLAN lists, spanning tree (root election, root/designated/blocked ports), switch management SVI |
-| Layer 3 | ARP (with proxy ARP on routers), IPv4 forwarding with TTL, longest-prefix match, connected/local/static routes, default and floating static routes (administrative distance), router-on-a-stick sub-interfaces, RIP version 2 with split horizon and triggered updates |
+| Layer 3 | ARP (with proxy ARP on routers), IPv4 forwarding with TTL, longest-prefix match, connected/local/static routes, default and floating static routes (administrative distance), router-on-a-stick sub-interfaces, RIP version 2 with split horizon and triggered updates, OSPF neighbours (hellos, DR/BDR election, adjacencies) |
 | Services | DHCP server (router pools or server GUI), DHCP relay (`ip helper-address`), DNS server, simple web server and browser |
 | Security | Numbered standard (1–99) and extended (100–199) access lists, `ip access-group in/out`, implicit deny, hit counters |
-| Router/switch CLI | User/privileged/config modes, unique-prefix abbreviations (`sh ip int br`), `?` help, Tab completion, history, `do`, `interface range`, `show running-config`, `show ip route`, `show vlan brief`, `show interfaces trunk`, `show spanning-tree`, `show mac address-table`, `show cdp neighbors`, `show ip dhcp binding`, `show access-lists`, `show ip protocols`, `copy run start`, `reload`, `ping`, `traceroute` and more |
+| Router/switch CLI | User/privileged/config modes, unique-prefix abbreviations (`sh ip int br`), `?` help, Tab completion, history, `do`, `interface range`, `show running-config`, `show ip route`, `show vlan brief`, `show interfaces trunk`, `show spanning-tree`, `show mac address-table`, `show cdp neighbors`, `show ip dhcp binding`, `show access-lists`, `show ip protocols`, `show ip ospf neighbor`, `copy run start`, `reload`, `ping`, `traceroute` and more |
 | PC command prompt | `ipconfig [/all /release /renew]`, `ping [-n]`, `tracert`, `arp -a/-d`, `nslookup`, `route print` |
-| Learning | Simulation mode with step/play, protocol filters, animated envelopes, a per-hop packet inspector (Ethernet, 802.1Q, ARP, IPv4, ICMP, UDP, DHCP, DNS, RIP, HTTP), and nine guided labs with automatic checks |
+| Learning | Simulation mode with step/play, protocol filters, animated envelopes, a per-hop packet inspector (Ethernet, 802.1Q, ARP, IPv4, ICMP, UDP, DHCP, DNS, RIP, OSPF, HTTP), and nine guided labs with automatic checks |
 | Files | Autosave in the browser, plus save/open topologies as `.onsim.json` |
 
 ### Guided labs
@@ -52,6 +52,7 @@ src/engine/   network.js   discrete-event clock, cables, frame delivery, event r
               host.js      PC / laptop / server (+ DHCP client, DNS, HTTP) and hub
               switch.js    MAC table, VLANs, trunks, SVI          stp.js  spanning tree
               router.js    sub-interfaces, DHCP server/relay      rip.js  RIPv2   acl.js  ACLs
+              ospf.js      OSPF hellos, neighbour states, DR/BDR election
               dhcp.js      DHCP server and client state machines
               factory.js   device catalogue, save/load
 src/cli/      parser.js    IOS-style grammar: prefixes, ambiguity, '?' help, Tab

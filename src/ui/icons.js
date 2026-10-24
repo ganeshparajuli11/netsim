@@ -51,5 +51,5 @@ export function iconSvg(type, size = 44) {
 }
 
 export const PROTO_COLORS = {
-  ARP: 'var(--p-arp)', ICMP: 'var(--p-icmp)', DHCP: 'var(--p-dhcp)', DNS: 'var(--p-dns)', RIP: 'var(--p-rip)', HTTP: 'var(--p-http)', TCP: 'var(--p-http)', UDP: 'var(--p-other)', STP: 'var(--p-other)', IPv4: 'var(--p-other)',
+  ARP: 'var(--p-arp)', ICMP: 'var(--p-icmp)', DHCP: 'var(--p-dhcp)', DNS: 'var(--p-dns)', RIP: 'var(--p-rip)', OSPF: 'var(--p-ospf)', HTTP: 'var(--p-http)', TCP: 'var(--p-http)', UDP: 'var(--p-other)', STP: 'var(--p-other)', IPv4: 'var(--p-other)',
 };

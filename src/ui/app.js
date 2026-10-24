@@ -16,7 +16,7 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
 };
-const PROTOCOLS = ['ARP', 'ICMP', 'DHCP', 'DNS', 'HTTP', 'RIP', 'UDP'];
+const PROTOCOLS = ['ARP', 'ICMP', 'DHCP', 'DNS', 'HTTP', 'RIP', 'OSPF', 'UDP'];
 
 class App {
   constructor() {
@@ -591,6 +591,18 @@ class App {
         if (p.dstPort === 67 || p.dstPort === 68) layers.push(['DHCP', 'layer 7', kv({ Message: m.msg, 'Transaction ID': `0x${(m.xid >>> 0).toString(16)}`, 'Client MAC': formatMac(m.chaddr), 'Your IP (offered)': m.yiaddr, 'Relay agent': m.giaddr !== '0.0.0.0' ? m.giaddr : undefined, 'Subnet mask': m.options?.mask, Router: m.options?.router, DNS: m.options?.dns, 'Requested IP': m.options?.requestedIp, 'Server ID': m.options?.serverId })]);
         else if (p.dstPort === 53 || p.srcPort === 53) layers.push(['DNS', 'layer 7', kv({ Kind: m.qr ? 'Response' : 'Query', Name: m.name, Type: m.type, Answer: m.qr ? m.answer || 'not found' : undefined })]);
         else if (p.dstPort === 520) layers.push(['RIP v2', 'layer 7', `<dl class="kv">${(m.entries || []).map((e) => `<dt>${e.network}/${maskToPrefix(e.mask)}</dt><dd>metric ${e.metric}${e.metric >= 16 ? ' (unreachable)' : ''}</dd>`).join('')}</dl>`]);
+      } else if (ip.proto === 'OSPF') {
+        const ospfFields = { Type: p.type === 'Hello' ? '1 (Hello)' : '2 (Database description)', 'Router ID': p.routerId, Area: p.area };
+        if (p.type === 'Hello') {
+          Object.assign(ospfFields, {
+            'Network mask': p.mask, 'Hello interval': `${p.hello} s`, 'Dead interval': `${p.dead} s`, Priority: p.priority,
+            'Designated router': p.dr, 'Backup designated router': p.bdr,
+            'Neighbours seen': p.neighbors?.length ? p.neighbors.join(', ') : 'none yet',
+          });
+        } else {
+          Object.assign(ospfFields, { Role: p.master ? 'master' : 'slave', Acknowledges: p.ack ? 'yes' : 'no', 'LSA headers': p.lsas?.length || 0 });
+        }
+        layers.push(['OSPF', 'layer 3, IP protocol 89', kv(ospfFields)]);
       } else if (ip.proto === 'TCP') {
         layers.push(['TCP', 'layer 4', kv({ 'Source port': p.srcPort, 'Destination port': p.dstPort })]);
         layers.push(['HTTP', 'layer 7', kv(p.payload.method ? { Request: `${p.payload.method} ${p.payload.path}`, Host: p.payload.host } : { Status: p.payload.status, Body: `${(p.payload.body || '').length} bytes` })]);
@@ -774,7 +786,7 @@ class App {
     s.innerHTML = `
       <label><input type="checkbox" id="pref-ports" ${this.prefs.showPorts ? 'checked' : ''}> Port labels</label>
       <label><input type="checkbox" id="pref-ips" ${this.prefs.showIps ? 'checked' : ''}> IP addresses</label>
-      <button class="btn" id="skip" title="Advance the simulated clock (useful for RIP and DHCP timers)">Skip 30 s</button>
+      <button class="btn" id="skip" title="Advance the simulated clock (useful for RIP, OSPF and DHCP timers)">Skip 30 s</button>
       <span class="push">OpenNetSim is open source (MIT licence)</span>`;
     s.querySelector('#pref-ports').onchange = (e) => { this.prefs.showPorts = e.target.checked; this.savePrefs(); this.canvas.render(); };
     s.querySelector('#pref-ips').onchange = (e) => { this.prefs.showIps = e.target.checked; this.savePrefs(); this.canvas.render(); };
