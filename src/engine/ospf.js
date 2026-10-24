@@ -3,7 +3,7 @@
 // Link-state advertisements and shortest-path routes come later; until then the database
 // exchange carries no LSAs, so two routers are in sync as soon as their DBDs cross.
 
-import { ipToInt, networkOf } from './util.js';
+import { ipToInt, networkOf, inSubnet } from './util.js';
 
 export const OSPF_MAC = '0100.5E00.0005';
 export const OSPF_ALL_ROUTERS = '224.0.0.5';
@@ -40,6 +40,7 @@ export class Ospf {
     this.routerId = null;
     this.networks = [];          // {ip, wildcard, area}
     this.passive = new Set();    // interface names
+    this.logAdjacency = true;    // %OSPF-5-ADJCHG console messages
     this.ifs = new Map();        // interface name -> runtime state
   }
 
@@ -62,6 +63,7 @@ export class Ospf {
     this.networks = [];
     this.passive.clear();
     this.routerIdConfigured = null;
+    this.logAdjacency = true;
   }
 
   /** Router ID: the configured one, else the highest IPv4 address on an interface that is up. */
@@ -261,6 +263,7 @@ export class Ospf {
     const r = this.r;
     // Parameters that must match before two routers can be neighbours (RFC 2328 10.5)
     if (m.area !== st.area) { r.explain(`OSPF hello from ${pkt.src} ignored: it is in area ${m.area}, this interface is in area ${st.area}`); return; }
+    if (!inSubnet(pkt.src, st.ip, st.mask)) { r.explain(`OSPF hello from ${pkt.src} ignored: it is not in my subnet ${networkOf(st.ip, st.mask)}`); return; }
     if (m.mask !== st.mask) { r.explain(`OSPF hello from ${pkt.src} ignored: subnet mask ${m.mask} does not match ${st.mask}`); return; }
     if (m.hello !== st.hello) { r.explain(`OSPF hello from ${pkt.src} ignored: hello interval ${m.hello} s does not match ${st.hello} s`); return; }
     if (m.dead !== st.dead) { r.explain(`OSPF hello from ${pkt.src} ignored: dead interval ${m.dead} s does not match ${st.dead} s`); return; }
@@ -271,6 +274,12 @@ export class Ospf {
     }
 
     let nb = st.neighbors.get(m.routerId);
+    if (nb && nb.ip !== pkt.src) {
+      // Two different routers on this segment claim the same router ID; keep the first one
+      r.explain(`OSPF hello from ${pkt.src} ignored: router ID ${m.routerId} already belongs to neighbour ${nb.ip}`);
+      r.syslog(`%OSPF-4-DUP_RTRID_NBR: OSPF detected duplicate router-id ${m.routerId} from ${pkt.src} on interface ${st.iface.name}`);
+      return;
+    }
     const isNew = !nb;
     if (!nb) {
       nb = { rid: m.routerId, ip: pkt.src, state: 'DOWN', priority: m.priority, dr: m.dr, bdr: m.bdr, deadTimer: null, rxmtTimer: null, dbdSent: false };
@@ -294,6 +303,8 @@ export class Ospf {
     } else if (!seesMe && rank(nb.state) >= rank('2WAY')) {
       r.explain(`OSPF hello from ${m.routerId} no longer lists my router ID: back to INIT`);
       this.dropAdjacency(st, nb, 'INIT', '1-Way');
+      // Two-way contact is lost, so the neighbour can no longer hold a DR or BDR role here
+      if (!st.waiting) this.electAndAdjust(st);
     } else if (!isNew) {
       r.explain(`OSPF hello from ${m.routerId}: neighbour is alive (dead timer reset to ${st.dead} s)`);
     }
@@ -326,7 +337,7 @@ export class Ospf {
     if (old === state) return;
     nb.state = state;
     // Like real routers, the console only reports changes to and from FULL and DOWN
-    if (state === 'FULL' || old === 'FULL' || state === 'DOWN') {
+    if (this.logAdjacency && (state === 'FULL' || old === 'FULL' || state === 'DOWN')) {
       const why = reason || (state === 'FULL' ? 'Loading Done' : '');
       this.r.syslog(`%OSPF-5-ADJCHG: Process ${this.processId}, Nbr ${nb.rid} on ${st.iface.name} from ${old} to ${state}${why ? `, ${why}` : ''}`);
     }
@@ -462,6 +473,7 @@ export class Ospf {
     return {
       enabled: this.enabled, processId: this.processId, routerId: this.routerIdConfigured,
       networks: this.networks.map((n) => ({ ...n })), passive: [...this.passive],
+      logAdjacency: this.logAdjacency,
     };
   }
 
@@ -469,6 +481,7 @@ export class Ospf {
     this.networks = (c.networks || []).map((n) => ({ ...n }));
     this.passive = new Set(c.passive || []);
     this.routerIdConfigured = c.routerId || null;
+    this.logAdjacency = c.logAdjacency !== false;
     if (c.enabled) { this.enabled = false; this.enable(c.processId || 1); }
   }
 }

@@ -140,9 +140,10 @@ C.add('priv', 'reload', function () { this.reload(); });
 C.add('priv', ['clear arp-cache', 'clear ip arp'], function () { this.d.clearArp(); });
 C.add('priv', ['clear mac address-table', 'clear mac address-table dynamic', 'clear mac-address-table dynamic'], function () { this.d.macTable?.clear(); });
 C.add('priv', ['clear ip route *', 'clear ip route'], function () { if (this.d.rip) { this.d.rip.routes.clear(); this.d.rip.sync(); this.d.rip.triggerUpdate(); } });
-C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function () {
+C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function ([pid]) {
   if (!this.need('router')) return;
-  this.print('Reset ALL OSPF processes? [no]: yes\n');
+  if (pid !== undefined && pid !== this.d.ospf.processId) { this.print(`%OSPF: Process ${pid} is not running\n`); return; }
+  this.print(pid !== undefined ? `Reset OSPF process ${pid}? [no]: yes\n` : 'Reset ALL OSPF processes? [no]: yes\n');
   this.d.ospf.restart();
 });
 C.add('priv', ['clear access-list counters'], function () { if (this.d.acl) for (const l of this.d.acl.lists.values()) for (const r of l) r.hits = 0; });
@@ -208,13 +209,14 @@ C.add('config', ['router ospf <n>'], function ([pid]) {
   const o = this.d.ospf;
   if (o.enabled && o.processId !== pid) { this.print(`% This simulator runs one OSPF process per router; process ${o.processId} is already running\n`); return; }
   o.enable(pid);
+  this.changed();
   if (!o.routerId) this.print('%OSPF-4-NORTRID: OSPF process cannot pick a router-id. Configure an interface address or use "router-id"\n');
   this.mode = 'config-router';
   this.ctx = { proto: 'ospf' };
 });
 C.add('config', ['no router ospf <n>'], function ([pid]) {
   if (!this.need('router')) return;
-  if (this.d.ospf.enabled && this.d.ospf.processId === pid) this.d.ospf.disable();
+  if (this.d.ospf.enabled && this.d.ospf.processId === pid) { this.d.ospf.disable(); this.changed(); }
 });
 C.add('config', ['no router rip'], function () { this.need('router') && this.d.rip.disable(); });
 C.add('config', ['access-list <n> <line>'], function ([n, rest]) { this.need('router') && this.addAcl(n, rest); });
@@ -254,7 +256,7 @@ C.add(['config-if', 'config-subif'], ['ip ospf hello-interval|dead-interval|prio
   if (v < lo || v > hi) { this.print(`% Value must be between ${lo} and ${hi}\n`); return; }
   const i = this.ctx.iface;
   i.ospf = { ...(i.ospf || {}), [key]: v };
-  this.d.ospf.topologyChanged();
+  this.changed();
 });
 C.add(['config-if', 'config-subif'], ['no ip ospf hello-interval|dead-interval|priority', 'no ip ospf hello-interval|dead-interval|priority <n>'], function ([kind]) {
   if (!this.need('router')) return;
@@ -262,7 +264,7 @@ C.add(['config-if', 'config-subif'], ['no ip ospf hello-interval|dead-interval|p
   const o = { ...(i.ospf || {}) };
   delete o[OSPF_IF[kind][0]];
   i.ospf = Object.keys(o).length ? o : undefined;
-  this.d.ospf.topologyChanged();
+  this.changed();
 });
 C.add('config-subif', ['encapsulation dot1q <n>', 'encapsulation dot1q <n> native'], function ([v]) {
   const i = this.ctx.iface;
@@ -315,13 +317,14 @@ function ospfOnly(fn) {
   return function (...a) {
     if (this.ctx.proto !== 'ospf') { this.print('% Invalid input detected for RIP.\n'); return; }
     fn.apply(this, a);
+    this.changed(); // autosave and refresh open windows
   };
 }
 C.add('config-router', ['version <n>'], ripOnly(function ([v]) { this.d.rip.version = v; if (v !== 2) this.print('% This simulator implements RIP version 2 only (classless updates)\n'); }));
 C.add('config-router', ['network <ip>'], ripOnly(function ([ip]) { this.d.rip.addNetwork(ip); }));
 C.add('config-router', ['no network <ip>'], ripOnly(function ([ip]) { this.d.rip.removeNetwork(ip); }));
-C.add('config-router', ['passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') this.d.ospf.setPassive(n, true); else this.d.rip.passive.add(n); });
-C.add('config-router', ['no passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') this.d.ospf.setPassive(n, false); else this.d.rip.passive.delete(n); });
+C.add('config-router', ['passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') { this.d.ospf.setPassive(n, true); this.changed(); } else this.d.rip.passive.add(n); });
+C.add('config-router', ['no passive-interface <if>'], function ([n]) { if (this.ctx.proto === 'ospf') { this.d.ospf.setPassive(n, false); this.changed(); } else this.d.rip.passive.delete(n); });
 C.add('config-router', ['no auto-summary'], function () { if (this.ctx.proto !== 'ospf') this.d.rip.autoSummary = false; });
 C.add('config-router', ['auto-summary'], ripOnly(function () { this.d.rip.autoSummary = true; }));
 C.add('config-router', ['default-information originate', 'redistribute <line>'], function () { this.print('% Not supported in this simulator yet\n'); });
@@ -338,7 +341,8 @@ C.add('config-router', ['router-id <ip>'], ospfOnly(function ([rid]) {
 C.add('config-router', ['no router-id'], ospfOnly(function () {
   if (!this.d.ospf.clearRouterId()) this.print('% OSPF: Reload or use "clear ip ospf process" command, for this to take effect\n');
 }));
-C.add('config-router', ['log-adjacency-changes', 'log-adjacency-changes detail'], ospfOnly(function () {}));
+C.add('config-router', ['log-adjacency-changes', 'log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = true; }));
+C.add('config-router', ['no log-adjacency-changes', 'no log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = false; }));
 
 // 'do' lets any exec command run from config modes
 C.add(CONFIG_MODES, ['do <line>'], function ([rest]) {
@@ -1108,7 +1112,7 @@ Default version control: send version 2, receive 2
       if (d.ospf.enabled) {
         L.push(`router ospf ${d.ospf.processId}`);
         if (d.ospf.routerIdConfigured) L.push(` router-id ${d.ospf.routerIdConfigured}`);
-        L.push(' log-adjacency-changes');
+        L.push(d.ospf.logAdjacency ? ' log-adjacency-changes' : ' no log-adjacency-changes');
         for (const p of d.ospf.passive) L.push(` passive-interface ${p}`);
         for (const n of d.ospf.networks) L.push(` network ${n.ip} ${n.wildcard} area ${n.area}`);
         L.push('!');

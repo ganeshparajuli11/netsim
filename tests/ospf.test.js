@@ -266,3 +266,77 @@ test('startup-config and reload keep OSPF', () => {
   assert.equal(r1.ospf.enabled, true);
   assert.equal(nbr(r1, '10.1.0.2').state.split('/')[0], 'FULL');
 });
+
+test('hellos from outside the interface subnet are ignored', () => {
+  const { net, routers } = lan(2);
+  const [r1, r2] = routers;
+  ios(r2).run('en\nconf t\nint g0/0\nip address 10.9.0.2 255.255.255.0\nend');
+  ospfOn(r1, 'network 10.0.0.0 0.255.255.255 area 0');
+  ospfOn(r2, 'network 10.0.0.0 0.255.255.255 area 0');
+  net.recording = true;
+  net.runFor(60000);
+  assert.equal(r1.ospf.neighborRows().length, 0);
+  const notes = net.events.flatMap((e) => e.notes);
+  assert.ok(notes.some((n) => /R1: OSPF hello from 10\.9\.0\.2 ignored: it is not in my subnet 10\.0\.0\.0/.test(n)), notes.join('\n'));
+});
+
+test('two routers claiming one router ID do not share a neighbour entry', () => {
+  const { net, routers } = lan(3);
+  const [r1, r2, r3] = routers;
+  ospfOn(r1, 'network 10.0.0.0 0.0.0.255 area 0');
+  ospfOn(r2, 'router-id 7.7.7.7\nnetwork 10.0.0.0 0.0.0.255 area 0');
+  net.runFor(3000);
+  ospfOn(r3, 'router-id 7.7.7.7\nnetwork 10.0.0.0 0.0.0.255 area 0');
+  net.runFor(90000);
+  const rows = r1.ospf.neighborRows();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].ip, '10.0.0.2', 'the first router keeps the entry');
+  assert.ok(r1.consoleLines.some((l) => /DUP_RTRID_NBR: OSPF detected duplicate router-id 7\.7\.7\.7 from 10\.0\.0\.3/.test(l)));
+});
+
+test('losing two-way contact with the DR triggers a new election', () => {
+  const { net, routers } = lan(3);
+  const [r1, , r3] = routers;
+  routers.forEach((r) => ospfOn(r, 'network 10.0.0.0 0.0.0.255 area 0'));
+  net.runFor(90000);
+  const st = r1.ospf.ifs.get('GigabitEthernet0/0');
+  assert.equal(st.dr, '10.0.0.3');
+  // R3 keeps declaring itself DR, but its hello no longer lists R1 (one-way)
+  r1.ospf.receive(r1.getIface('GigabitEthernet0/0'), {
+    src: '10.0.0.3', dst: '224.0.0.5', proto: 'OSPF',
+    payload: { version: 2, type: 'Hello', routerId: r3.ospf.routerId, area: 0, mask: '255.255.255.0', hello: 10, dead: 40, priority: 1, dr: '10.0.0.3', bdr: '10.0.0.2', neighbors: ['10.0.0.2'] },
+  });
+  assert.equal(nbr(r1, '10.0.0.3').state.split('/')[0], 'INIT');
+  assert.notEqual(st.dr, '10.0.0.3', 'a one-way neighbour cannot stay DR');
+});
+
+test('clear ip ospf <n> process only resets a running process; adjacency logging can be turned off', () => {
+  const { net, r1, r2 } = pair();
+  ospfOn(r1, 'network 10.1.0.0 0.0.0.3 area 0\nno log-adjacency-changes');
+  ospfOn(r2, 'network 10.1.0.0 0.0.0.3 area 0');
+  net.runFor(90000);
+  assert.ok(nbr(r1, '10.1.0.2'));
+  assert.ok(!r1.consoleLines.some((l) => /ADJCHG/.test(l)), 'logging is off');
+  assert.ok(r2.consoleLines.some((l) => /ADJCHG/.test(l)));
+  assert.match(ios(r1).run('en\nclear ip ospf 2 process'), /Process 2 is not running/);
+  assert.ok(nbr(r1, '10.1.0.2'), 'process 1 was not reset');
+  assert.match(ios(r1).run('en\nshow run'), /router ospf 1\n no log-adjacency-changes/);
+  const copy = loadNetwork(JSON.parse(JSON.stringify(serializeNetwork(net))), new Network());
+  assert.equal(copy.findDevice('R1').ospf.logAdjacency, false);
+  assert.equal(copy.findDevice('R2').ospf.logAdjacency, true);
+});
+
+test('OSPF configuration changes notify the UI for autosave, and the neighbour filter takes short names', () => {
+  const { net, r1, r2 } = pair();
+  let events = 0;
+  net.on('config', () => { events++; });
+  ospfOn(r1, 'network 10.1.0.0 0.0.0.3 area 0');
+  assert.ok(events >= 2, 'router ospf and network both notify');
+  const before = events;
+  ios(r1).run('en\nconf t\nint g0/0\nip ospf priority 5\nend');
+  assert.ok(events > before);
+  ospfOn(r2, 'network 10.1.0.0 0.0.0.3 area 0');
+  net.runFor(90000);
+  assert.match(ios(r1).run('en\nshow ip ospf neighbor g0/0'), /10\.1\.0\.2\s+1\s+FULL/);
+  assert.doesNotMatch(ios(r1).run('en\nshow ip ospf neighbor g0/1'), /10\.1\.0\.2/);
+});
