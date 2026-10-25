@@ -274,6 +274,8 @@ export function protocolOf(frame) {
   return frame.type || '?';
 }
 
+export const OSPF_TYPES = { Hello: 'hello', DBD: 'database description', LSR: 'link-state request', LSU: 'link-state update', LSAck: 'link-state acknowledgement' };
+
 export function summarize(frame) {
   const p = protocolOf(frame);
   if (p === 'ARP') {
@@ -289,7 +291,7 @@ export function summarize(frame) {
     if (p === 'DHCP') return `DHCP ${ip.payload.payload.msg}`;
     if (p === 'DNS') return `DNS ${ip.payload.payload.qr ? 'response' : 'query'} ${ip.payload.payload.name}`;
     if (p === 'RIP') return `RIP update from ${ip.src}`;
-    if (p === 'OSPF') return ip.payload.type === 'Hello' ? `OSPF hello from ${ip.payload.routerId}` : `OSPF database description from ${ip.payload.routerId}`;
+    if (p === 'OSPF') return `OSPF ${OSPF_TYPES[ip.payload.type] || ip.payload.type} from ${ip.payload.routerId}`;
     if (p === 'HTTP') return `HTTP ${ip.payload.payload.method || ip.payload.payload.status || ''}`;
     return `${ip.src} → ${ip.dst} ${ip.proto}`;
   }

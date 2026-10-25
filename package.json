@@ -1,6 +1,6 @@
 {
   "name": "opennetsim",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Open-source, browser-based network simulator for learning: switches, routers, VLANs, DHCP, RIP, ACLs, with packet-by-packet simulation mode.",
   "type": "module",
   "license": "MIT",

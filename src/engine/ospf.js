@@ -1,7 +1,9 @@
-// OSPFv2, single area, part 1: interfaces, hellos, neighbour states, DR/BDR election and
-// adjacencies on broadcast (Ethernet) networks. Written from RFC 2328 (sections 9 and 10).
-// Link-state advertisements and shortest-path routes come later; until then the database
-// exchange carries no LSAs, so two routers are in sync as soon as their DBDs cross.
+// OSPFv2, single area, on broadcast (Ethernet) networks. Written from RFC 2328:
+// - interfaces, hellos, neighbour states and DR/BDR election (sections 9 and 10)
+// - router and network LSAs (12.4), database exchange with link-state requests (10.6-10.9)
+// - reliable flooding with updates and acknowledgements (13)
+// - shortest-path-first route calculation with Dijkstra's algorithm (16.1)
+// Each DBD carries every LSA header at once (no M bit), and LSAs never age out on their own.
 
 import { ipToInt, networkOf, inSubnet } from './util.js';
 
@@ -13,7 +15,31 @@ const RXMT = 5000;
 export const NBR_STATES = ['DOWN', 'INIT', '2WAY', 'EXSTART', 'EXCHANGE', 'LOADING', 'FULL'];
 const rank = (s) => NBR_STATES.indexOf(s);
 
-export const OSPF_DEFAULTS = { hello: 10, dead: 40, priority: 1 };
+export const OSPF_DEFAULTS = { hello: 10, dead: 40, priority: 1, referenceBw: 100 };
+const INITIAL_SEQ = 0x80000001;
+
+/** Interface bandwidth in kbit/s: the "bandwidth" command, else the port's line rate. */
+export function bandwidthKbps(i) {
+  if (i.bandwidth) return i.bandwidth;
+  if (i.parent) return bandwidthKbps(i.parent);
+  if (/^gig/i.test(i.name)) return 1000000;
+  if (/^fast/i.test(i.name)) return 100000;
+  return 10000;
+}
+
+export const lsaKey = (l) => `${l.type}:${l.id}:${l.adv}`;
+const header = (l) => ({ type: l.type, id: l.id, adv: l.adv, seq: l.seq, maxAge: !!l.maxAge });
+const hex = (n) => `0x${(n >>> 0).toString(16).padStart(8, '0')}`;
+/** Which of two copies of an LSA is more recent (RFC 2328 13.1, without checksums and ages). */
+function newer(a, b) {
+  if (!b) return true;
+  if (a.seq !== b.seq) return a.seq > b.seq;
+  return !!a.maxAge && !b.maxAge;
+}
+const sameBody = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+export function describeLsa(l) {
+  return `${l.type} LSA ${l.id} from ${l.adv} (seq ${hex(l.seq)}${l.maxAge ? ', withdrawn' : ''})`;
+}
 
 /** Settings for one interface, with defaults filled in. */
 export function ifaceOspf(i) {
@@ -42,6 +68,22 @@ export class Ospf {
     this.passive = new Set();    // interface names
     this.logAdjacency = true;    // %OSPF-5-ADJCHG console messages
     this.ifs = new Map();        // interface name -> runtime state
+    this.referenceBw = OSPF_DEFAULTS.referenceBw; // Mbit/s, for cost = reference / bandwidth
+    this.lsdb = new Map();       // lsaKey -> LSA (the link-state database for area 0)
+    this.routes = [];            // OSPF routes from the last SPF run
+    this.spfRuns = 0;
+    this.quiet = 0;              // >0 while a batch of changes is applied
+  }
+
+  /** Cost of an interface: "ip ospf cost", else reference bandwidth / interface bandwidth. */
+  ifaceCost(i) {
+    if (i.ospf?.cost) return i.ospf.cost;
+    return Math.max(1, Math.min(65535, Math.floor((this.referenceBw * 1000) / bandwidthKbps(i))));
+  }
+
+  setReferenceBw(mbps) {
+    this.referenceBw = mbps;
+    this.refresh();
   }
 
   // ---------------- configuration ----------------
@@ -55,8 +97,13 @@ export class Ospf {
   }
 
   disable() {
+    this.quiet++;
     for (const st of this.ifs.values()) this.stopIface(st, 'Interface down or detached');
+    this.quiet--;
     this.ifs.clear();
+    this.lsdb.clear();
+    this.setRoutes([]);
+    this.referenceBw = OSPF_DEFAULTS.referenceBw;
     this.enabled = false;
     this.processId = null;
     this.routerId = null;
@@ -89,8 +136,13 @@ export class Ospf {
   /** "clear ip ospf process": drop every neighbour and start again (picks up a new router ID). */
   restart() {
     if (!this.enabled) return;
+    this.quiet++;
     for (const st of this.ifs.values()) this.stopIface(st, 'Interface down or detached');
+    this.quiet--;
     this.ifs.clear();
+    // A new process starts with an empty database and learns it again from its neighbours
+    this.lsdb.clear();
+    this.setRoutes([]);
     this.chooseRouterId();
     this.refresh();
   }
@@ -148,6 +200,12 @@ export class Ospf {
   refresh() {
     if (!this.enabled || !this.r.net) return;
     if (!this.routerId) this.chooseRouterId();
+    this.quiet++;
+    try { this.refreshIfaces(); } finally { this.quiet--; }
+    this.rebuild();
+  }
+
+  refreshIfaces() {
     for (const i of this.r.ifaces) {
       const want = this.ospfIface(i) && !!this.routerId;
       const st = this.ifs.get(i.name);
@@ -171,6 +229,7 @@ export class Ospf {
           this.scheduleHello(st);
         }
       }
+      st.cost = this.ifaceCost(i);
       if (st.priority !== settings.priority) {
         st.priority = settings.priority;
         if (!st.waiting) this.electAndAdjust(st);
@@ -185,7 +244,7 @@ export class Ospf {
     const s = ifaceOspf(i);
     const st = {
       iface: i, ip: i.ip, mask: i.mask, area: this.areaOf(i), passive: this.passive.has(i.name),
-      hello: s.hello, dead: s.dead, priority: s.priority,
+      hello: s.hello, dead: s.dead, priority: s.priority, cost: this.ifaceCost(i),
       dr: '0.0.0.0', bdr: '0.0.0.0', waiting: true, waitTimer: null, helloTimer: null,
       neighbors: new Map(), // router ID -> neighbour
     };
@@ -198,6 +257,7 @@ export class Ospf {
       if (this.ifs.get(i.name) !== st) return;
       st.waiting = false;
       this.electAndAdjust(st);
+      this.rebuild();
     });
     this.sendHello(st);
     this.scheduleHello(st);
@@ -257,6 +317,9 @@ export class Ospf {
     if (r.ownsIp(pkt.src)) return;
     if (m.type === 'Hello') this.onHello(st, pkt, m);
     else if (m.type === 'DBD') this.onDbd(st, pkt, m);
+    else if (m.type === 'LSR') this.onLsr(st, pkt, m);
+    else if (m.type === 'LSU') this.onLsu(st, pkt, m);
+    else if (m.type === 'LSAck') this.onLsAck(st, pkt, m);
   }
 
   onHello(st, pkt, m) {
@@ -282,7 +345,7 @@ export class Ospf {
     }
     const isNew = !nb;
     if (!nb) {
-      nb = { rid: m.routerId, ip: pkt.src, state: 'DOWN', priority: m.priority, dr: m.dr, bdr: m.bdr, deadTimer: null, rxmtTimer: null, dbdSent: false };
+      nb = { rid: m.routerId, ip: pkt.src, state: 'DOWN', priority: m.priority, dr: m.dr, bdr: m.bdr, deadTimer: null, rxmtTimer: null, dbdSent: false, ...freshExchange() };
       st.neighbors.set(m.routerId, nb);
     }
     const prev = { priority: nb.priority, dr: nb.dr, bdr: nb.bdr };
@@ -341,6 +404,8 @@ export class Ospf {
       const why = reason || (state === 'FULL' ? 'Loading Done' : '');
       this.r.syslog(`%OSPF-5-ADJCHG: Process ${this.processId}, Nbr ${nb.rid} on ${st.iface.name} from ${old} to ${state}${why ? `, ${why}` : ''}`);
     }
+    // A full adjacency appearing or going away changes this router's LSAs
+    if ((old === 'FULL') !== (state === 'FULL')) this.rebuild();
   }
 
   dropNeighbor(st, nb, reason, reelect) {
@@ -348,6 +413,7 @@ export class Ospf {
     if (nb.deadTimer) net?.cancel(nb.deadTimer);
     if (nb.rxmtTimer) net?.cancel(nb.rxmtTimer);
     nb.deadTimer = nb.rxmtTimer = null;
+    this.clearExchange(nb);
     if (reason === 'Dead timer expired') this.r.explain?.(`OSPF: no hello from ${nb.rid} for ${st.dead} s, neighbour removed`);
     this.setState(st, nb, 'DOWN', reason);
     st.neighbors.delete(nb.rid);
@@ -358,6 +424,7 @@ export class Ospf {
   dropAdjacency(st, nb, state, reason) {
     if (nb.rxmtTimer) { this.r.net.cancel(nb.rxmtTimer); nb.rxmtTimer = null; }
     nb.dbdSent = false;
+    this.clearExchange(nb);
     this.setState(st, nb, state, reason);
   }
 
@@ -388,6 +455,12 @@ export class Ospf {
 
   electAndAdjust(st) {
     if (st.passive) return;
+    this.quiet++;
+    try { this.electAndAdjustNow(st); } finally { this.quiet--; }
+    this.rebuild();
+  }
+
+  electAndAdjustNow(st) {
     const r = this.r;
     const before = { dr: st.dr, bdr: st.bdr };
     const res = this.elect(st);
@@ -420,7 +493,7 @@ export class Ospf {
 
   sendDbd(st, nb, ack) {
     this.r.explain?.(`OSPF: sending database description to ${nb.rid}`);
-    this.sendPacket(st, nb.ip, { type: 'DBD', ack, master: cmpRid(this.routerId, nb.rid) > 0, lsas: [] });
+    this.sendPacket(st, nb.ip, { type: 'DBD', ack, master: cmpRid(this.routerId, nb.rid) > 0, lsas: [...this.lsdb.values()].map(header) });
     nb.dbdSent = true;
     if (!ack && rank(nb.state) < rank('FULL')) {
       // Unanswered DBDs are sent again (the first one is often lost while ARP resolves)
@@ -440,16 +513,295 @@ export class Ospf {
       if (!this.shouldBeAdjacent(st, nb)) { r.explain(`OSPF database description from ${m.routerId} ignored: neither of us is DR or BDR`); return; }
       this.setState(st, nb, 'EXSTART');
     }
-    if (nb.state === 'FULL') {
+    if (nb.state === 'FULL' || nb.state === 'LOADING') {
       if (!m.ack) this.sendDbd(st, nb, true);
       return;
     }
     if (!m.ack) this.sendDbd(st, nb, true);
     if (nb.rxmtTimer) { r.net.cancel(nb.rxmtTimer); nb.rxmtTimer = null; }
     nb.state = 'EXCHANGE';
-    nb.state = 'LOADING';
-    r.explain(`OSPF database description from ${m.routerId}: our link-state databases match, nothing to request, adjacency is FULL`);
-    this.setState(st, nb, 'FULL');
+    // Compare the neighbour's LSA headers with our own database (RFC 2328 10.6)
+    nb.requests = new Map();
+    for (const h of m.lsas || []) {
+      const cur = this.lsdb.get(lsaKey(h));
+      if (h.maxAge && !cur) continue;
+      if (newer(h, cur)) nb.requests.set(lsaKey(h), h);
+    }
+    if (!nb.requests.size) {
+      r.explain(`OSPF database description from ${m.routerId}: our link-state databases match, nothing to request, adjacency is FULL`);
+      nb.state = 'LOADING';
+      this.setState(st, nb, 'FULL');
+      return;
+    }
+    this.setState(st, nb, 'LOADING');
+    r.explain(`OSPF database description from ${m.routerId}: it lists ${nb.requests.size} LSA(s) I am missing or hold an older copy of; state LOADING, asking for them with a link-state request`);
+    this.sendLsr(st, nb);
+  }
+
+  // ---------------- requests, updates and acknowledgements ----------------
+
+  sendLsr(st, nb) {
+    const net = this.r.net;
+    if (nb.lsrTimer) net.cancel(nb.lsrTimer);
+    nb.lsrTimer = null;
+    if (!nb.requests.size || nb.state !== 'LOADING') return;
+    this.r.explain?.(`OSPF: sending link-state request for ${nb.requests.size} LSA(s) to ${nb.rid}`);
+    this.sendPacket(st, nb.ip, { type: 'LSR', requests: [...nb.requests.values()].map(header) });
+    nb.lsrTimer = net.schedule(RXMT, () => {
+      nb.lsrTimer = null;
+      if (st.neighbors.get(nb.rid) === nb) this.sendLsr(st, nb);
+    });
+  }
+
+  onLsr(st, pkt, m) {
+    const r = this.r;
+    const nb = st.neighbors.get(m.routerId);
+    if (!nb || rank(nb.state) < rank('EXCHANGE')) { r.explain(`OSPF link-state request from ${pkt.src} ignored: no database exchange with ${m.routerId}`); return; }
+    const lsas = (m.requests || []).map((h) => this.lsdb.get(lsaKey(h))).filter(Boolean);
+    r.explain(`OSPF link-state request from ${m.routerId}: answering with ${lsas.length} LSA(s) in a link-state update`);
+    if (lsas.length) this.sendPacket(st, nb.ip, { type: 'LSU', lsas });
+  }
+
+  onLsu(st, pkt, m) {
+    const r = this.r;
+    const nb = st.neighbors.get(m.routerId);
+    if (!nb || rank(nb.state) < rank('EXCHANGE')) { r.explain(`OSPF link-state update from ${pkt.src} ignored: ${m.routerId} is not a full neighbour on this segment`); return; }
+    const acks = [];
+    const learned = [];
+    let dbChanged = false;
+    for (const lsa of m.lsas || []) {
+      const key = lsaKey(lsa);
+      const cur = this.lsdb.get(key);
+      const req = nb.requests.get(key);
+      if (req && !newer(req, lsa)) nb.requests.delete(key);
+      if (newer(lsa, cur)) {
+        if (lsa.adv === this.routerId) {
+          // An old copy of one of my own LSAs (from before a restart): replace it (RFC 2328 13.4)
+          r.explain(`OSPF: ${describeLsa(lsa)} is my own LSA from an earlier life; sending a newer copy`);
+          this.lsdb.set(key, { ...lsa });
+          acks.push(header(lsa));
+          this.rebuild(key);
+          continue;
+        }
+        if (cur) nb.rxmt.delete(key);
+        r.explain(`OSPF link-state update from ${m.routerId}: new ${describeLsa(lsa)}, added to my database`);
+        this.lsdb.set(key, lsa);
+        dbChanged = true;
+        learned.push(lsa);
+        acks.push(header(lsa));
+        this.flood(lsa, st, nb);
+      } else if (!newer(cur, lsa)) {
+        // Same copy as ours: it either acknowledges what we sent or needs an acknowledgement
+        if (nb.rxmt.has(key)) nb.rxmt.delete(key);
+        else acks.push(header(lsa));
+      } else {
+        // The neighbour has an older copy: send it ours
+        nb.rxmt.set(key, cur);
+        this.armRxmt(st, nb);
+        this.sendPacket(st, nb.ip, { type: 'LSU', lsas: [cur] });
+      }
+    }
+    if (!learned.length) r.explain(`OSPF link-state update from ${m.routerId}: nothing new`);
+    if (acks.length) this.sendPacket(st, OSPF_ALL_ROUTERS, { type: 'LSAck', lsas: acks });
+    if (nb.state === 'LOADING' && !nb.requests.size) {
+      if (nb.lsrTimer) { r.net.cancel(nb.lsrTimer); nb.lsrTimer = null; }
+      r.explain(`OSPF: every LSA requested from ${m.routerId} has arrived, adjacency is FULL`);
+      this.setState(st, nb, 'FULL');
+    }
+    if (dbChanged) this.spf();
+  }
+
+  onLsAck(st, pkt, m) {
+    const nb = st.neighbors.get(m.routerId);
+    if (!nb || rank(nb.state) < rank('EXCHANGE')) return;
+    let n = 0;
+    for (const h of m.lsas || []) {
+      const cur = nb.rxmt.get(lsaKey(h));
+      if (cur && cur.seq === h.seq && !!cur.maxAge === !!h.maxAge) { nb.rxmt.delete(lsaKey(h)); n++; }
+    }
+    this.r.explain(`OSPF link-state acknowledgement from ${m.routerId}: ${n ? `${n} LSA(s) confirmed, no need to resend them` : 'nothing waiting for it'}`);
+  }
+
+  /** Sends an LSA to every neighbour that should get it (RFC 2328 13.3). */
+  flood(lsa, fromSt = null, fromNb = null) {
+    for (const st of this.ifs.values()) {
+      if (st.passive) continue;
+      const targets = [...st.neighbors.values()].filter((n) => n !== fromNb && rank(n.state) >= rank('EXCHANGE'));
+      if (!targets.length) continue;
+      // On the segment it came from, only the DR sends it on to everyone else
+      if (st === fromSt && st.dr !== st.ip) continue;
+      for (const n of targets) { n.rxmt.set(lsaKey(lsa), lsa); this.armRxmt(st, n); }
+      this.r.explain?.(`OSPF: flooding ${describeLsa(lsa)} out ${st.iface.name}`);
+      this.sendPacket(st, OSPF_ALL_ROUTERS, { type: 'LSU', lsas: [lsa] });
+    }
+  }
+
+  /** Unacknowledged LSAs are sent again, straight to the neighbour, every 5 s. */
+  armRxmt(st, nb) {
+    const net = this.r.net;
+    if (nb.lsuTimer) return;
+    nb.lsuTimer = net.schedule(RXMT, () => {
+      nb.lsuTimer = null;
+      if (st.neighbors.get(nb.rid) !== nb || !nb.rxmt.size || rank(nb.state) < rank('EXCHANGE')) return;
+      this.r.explain?.(`OSPF: ${nb.rid} has not acknowledged ${nb.rxmt.size} LSA(s); sending them again`);
+      this.sendPacket(st, nb.ip, { type: 'LSU', lsas: [...nb.rxmt.values()] });
+      this.armRxmt(st, nb);
+    });
+  }
+
+  clearExchange(nb) {
+    const net = this.r.net;
+    if (nb.lsuTimer) net?.cancel(nb.lsuTimer);
+    if (nb.lsrTimer) net?.cancel(nb.lsrTimer);
+    Object.assign(nb, freshExchange());
+  }
+
+  // ---------------- originating LSAs (RFC 2328 12.4) ----------------
+
+  /** The links in this router's router LSA. */
+  ownRouterLinks() {
+    const links = [];
+    for (const st of this.ifs.values()) {
+      const nbs = [...st.neighbors.values()];
+      const transit = !st.passive && !st.waiting && st.dr !== '0.0.0.0'
+        && (st.dr === st.ip ? nbs.some((n) => n.state === 'FULL') : nbs.some((n) => n.ip === st.dr && n.state === 'FULL'));
+      if (transit) links.push({ kind: 'transit', id: st.dr, data: st.ip, cost: st.cost });
+      else links.push({ kind: 'stub', id: networkOf(st.ip, st.mask), data: st.mask, cost: st.cost });
+    }
+    return links.sort((a, b) => ipToInt(a.id) - ipToInt(b.id) || a.kind.localeCompare(b.kind));
+  }
+
+  /** Installs and floods a new instance of one of this router's LSAs if its content changed. */
+  originate(type, id, body, force = false) {
+    const key = lsaKey({ type, id, adv: this.routerId });
+    const cur = this.lsdb.get(key);
+    if (cur && !cur.maxAge && !force && sameBody(bodyOf(cur), body)) return false;
+    const lsa = { type, id, adv: this.routerId, seq: cur ? cur.seq + 1 : INITIAL_SEQ, born: this.r.now, ...body };
+    this.lsdb.set(key, lsa);
+    this.r.explain?.(`OSPF: my ${type} LSA changed, sending a new copy (seq ${hex(lsa.seq)}) to my full neighbours`);
+    this.flood(lsa);
+    return true;
+  }
+
+  /** Withdraws one of this router's LSAs by flooding it as too old to use (premature aging). */
+  flush(key) {
+    const cur = this.lsdb.get(key);
+    if (!cur || cur.maxAge) return;
+    const lsa = { ...cur, seq: cur.seq + 1, born: this.r.now, maxAge: true };
+    this.lsdb.set(key, lsa);
+    this.r.explain?.(`OSPF: withdrawing ${describeLsa(cur)}`);
+    this.flood(lsa);
+  }
+
+  /** Brings this router's own LSAs up to date, then recalculates routes. */
+  rebuild(forceKey = null) {
+    if (this.quiet || !this.enabled || !this.routerId || !this.r.net) return;
+    this.originate('router', this.routerId, { links: this.ownRouterLinks() }, forceKey === lsaKey({ type: 'router', id: this.routerId, adv: this.routerId }));
+    // The DR describes its segment in a network LSA listing every router fully adjacent to it
+    const wanted = new Set();
+    for (const st of this.ifs.values()) {
+      if (st.passive || st.waiting || st.dr !== st.ip) continue;
+      const full = [...st.neighbors.values()].filter((n) => n.state === 'FULL').map((n) => n.rid).sort(cmpRid);
+      if (!full.length) continue;
+      const key = lsaKey({ type: 'network', id: st.ip, adv: this.routerId });
+      wanted.add(key);
+      this.originate('network', st.ip, { mask: st.mask, attached: [this.routerId, ...full] }, forceKey === key);
+    }
+    for (const [key, l] of [...this.lsdb]) {
+      if (l.adv === this.routerId && !wanted.has(key) && !(l.type === 'router' && l.id === this.routerId)) this.flush(key);
+    }
+    this.spf();
+  }
+
+  // ---------------- shortest path first (RFC 2328 16.1) ----------------
+
+  spf() {
+    const r = this.r;
+    const me = this.routerId;
+    const routerLsa = (rid) => { const l = this.lsdb.get(`router:${rid}:${rid}`); return l && !l.maxAge ? l : null; };
+    const netLsa = (id) => [...this.lsdb.values()].find((l) => l.type === 'network' && l.id === id && !l.maxAge) || null;
+    const root = me && routerLsa(me);
+    if (!root) { this.setRoutes([]); return; }
+    const hopKey = (h) => `${h.iface.name}|${h.nextHop}`;
+    const merge = (a, b) => { const m = new Map([...a, ...b].map((h) => [hopKey(h), h])); return [...m.values()]; };
+    const tree = new Map();
+    const cand = new Map([[`R:${me}`, { kind: 'R', id: me, lsa: root, cost: 0, hops: [], isRoot: true }]]);
+    const relax = (key, v) => {
+      if (tree.has(key)) return;
+      const c = cand.get(key);
+      if (!c || v.cost < c.cost) cand.set(key, v);
+      else if (v.cost === c.cost) c.hops = merge(c.hops, v.hops);
+    };
+    while (cand.size) {
+      let best = null;
+      for (const [k, v] of cand) if (!best || v.cost < best[1].cost) best = [k, v];
+      const [key, v] = best;
+      cand.delete(key);
+      tree.set(key, v);
+      if (v.kind === 'R') {
+        for (const link of v.lsa.links || []) {
+          if (link.kind !== 'transit') continue;
+          const n = netLsa(link.id);
+          if (!n || !n.attached.includes(v.id)) continue; // the network must list this router too
+          let hops = v.hops;
+          if (v.isRoot) {
+            const st = [...this.ifs.values()].find((s) => s.ip === link.data);
+            if (!st) continue;
+            hops = [{ iface: st.iface, nextHop: null }];
+          }
+          relax(`N:${link.id}`, { kind: 'N', id: link.id, lsa: n, cost: v.cost + link.cost, hops, direct: v.isRoot });
+        }
+      } else {
+        for (const rid of v.lsa.attached) {
+          const w = routerLsa(rid);
+          const back = w && (w.links || []).find((l) => l.kind === 'transit' && l.id === v.id);
+          if (!back) continue; // two-way check: the router must point back at this network
+          const hops = v.direct ? [{ iface: v.hops[0].iface, nextHop: back.data }] : v.hops;
+          relax(`R:${rid}`, { kind: 'R', id: rid, lsa: w, cost: v.cost, hops });
+        }
+      }
+    }
+    // Every reached network and every stub network of a reached router becomes a route
+    const best = new Map();
+    const offer = (network, mask, cost, hops) => {
+      const k = `${network}/${mask}`;
+      const c = best.get(k);
+      if (!c || cost < c.cost) best.set(k, { network, mask, cost, hops });
+      else if (cost === c.cost) c.hops = merge(c.hops, hops);
+    };
+    let routers = 0, networks = 0;
+    for (const v of tree.values()) {
+      if (v.kind === 'N') {
+        networks++;
+        if (!v.direct) offer(networkOf(v.id, v.lsa.mask), v.lsa.mask, v.cost, v.hops);
+        continue;
+      }
+      routers++;
+      if (v.isRoot) continue;
+      for (const l of v.lsa.links || []) if (l.kind === 'stub') offer(l.id, l.data, v.cost + l.cost, v.hops);
+    }
+    const list = [];
+    for (const b of best.values()) {
+      for (const h of b.hops) if (h.nextHop) list.push({ proto: 'O', network: b.network, mask: b.mask, nextHop: h.nextHop, iface: h.iface, metric: b.cost, ad: 110 });
+    }
+    this.spfRuns++;
+    this.lastSpf = r.now;
+    this.spfTree = tree;
+    const sig = (l) => l.map((x) => `${x.network}/${x.mask}>${x.nextHop}@${x.metric}`).sort().join(',');
+    if (sig(list) !== sig(this.routes)) {
+      r.explain?.(`OSPF: ran shortest path first (Dijkstra) over ${routers} router(s) and ${networks} transit network(s); ${list.length} OSPF route(s) now, each using the lowest total cost`);
+    }
+    this.setRoutes(list);
+  }
+
+  setRoutes(list) {
+    const old = new Map(this.routes.map((x) => [`${x.network}/${x.mask}>${x.nextHop}`, x]));
+    for (const x of list) {
+      const o = old.get(`${x.network}/${x.mask}>${x.nextHop}`);
+      x.time = o && o.metric === x.metric ? o.time : this.r.now;
+    }
+    this.routes = list;
+    this.r.ospfRoutes = list;
   }
 
   // ---------------- show helpers ----------------
@@ -467,6 +819,26 @@ export class Ospf {
     return rows;
   }
 
+  // ---------------- show helpers (continued) ----------------
+
+  /** Rows for "show ip ospf interface brief". */
+  interfaceRows() {
+    return [...this.ifs.values()].map((st) => {
+      const nbs = [...st.neighbors.values()];
+      const state = st.passive ? 'DR' : st.waiting ? 'WAIT' : this.role(st, st.ip);
+      return { iface: st.iface.name, area: st.area, ip: st.ip, mask: st.mask, cost: st.cost, state, full: nbs.filter((n) => n.state === 'FULL').length, count: nbs.length };
+    });
+  }
+
+  /** Router IDs this router has a usable router LSA from, with when it was originated. */
+  sources() {
+    const out = [];
+    for (const v of this.spfTree?.values() || []) {
+      if (v.kind === 'R' && !v.isRoot) out.push({ rid: v.id, born: v.lsa.born ?? 0 });
+    }
+    return out.sort((a, b) => cmpRid(a.rid, b.rid));
+  }
+
   // ---------------- persistence ----------------
 
   save() {
@@ -474,6 +846,7 @@ export class Ospf {
       enabled: this.enabled, processId: this.processId, routerId: this.routerIdConfigured,
       networks: this.networks.map((n) => ({ ...n })), passive: [...this.passive],
       logAdjacency: this.logAdjacency,
+      referenceBw: this.referenceBw === OSPF_DEFAULTS.referenceBw ? undefined : this.referenceBw,
     };
   }
 
@@ -482,8 +855,19 @@ export class Ospf {
     this.passive = new Set(c.passive || []);
     this.routerIdConfigured = c.routerId || null;
     this.logAdjacency = c.logAdjacency !== false;
+    this.referenceBw = c.referenceBw || OSPF_DEFAULTS.referenceBw;
     if (c.enabled) { this.enabled = false; this.enable(c.processId || 1); }
   }
+}
+
+function freshExchange() {
+  return { requests: new Map(), rxmt: new Map(), lsuTimer: null, lsrTimer: null };
+}
+
+function bodyOf(l) {
+  const { type, id, adv, seq, born, maxAge, ...body } = l;
+  void type; void id; void adv; void seq; void born; void maxAge;
+  return body;
 }
 
 function popcount(n) {

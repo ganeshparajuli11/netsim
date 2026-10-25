@@ -61,6 +61,17 @@ function settledHostIp(net, name) {
   return copy.findDevice(name)?.nic?.ip || null;
 }
 
+// OSPF waits one dead interval (40 s) before electing a DR, then exchanges databases
+const OSPF_WARMUP = 70000;
+
+/** True when `router` has an OSPF route to `network` through `nextHop`, once OSPF has converged. */
+function ospfRouteVia(net, router, network, nextHop) {
+  const copy = loadNetwork(serializeNetwork(net), new Network());
+  copy.settle(OSPF_WARMUP);
+  const r = copy.findDevice(router);
+  return !!r?.routes?.().some((x) => x.proto === 'O' && x.network === network && x.nextHop === nextHop);
+}
+
 export const LABS = [
   {
     id: 'first-lan',
@@ -296,6 +307,52 @@ export const LABS = [
     checks: [
       { text: 'RIP is running on all three routers', fn: (n) => ['R1', 'R2', 'R3'].every((r) => find(n, r).rip.enabled && find(n, r).rip.networks.length) },
       { text: 'PC1 can ping PC3', fn: (n) => canReach(n, 'PC1', '10.3.0.10', { warmup: 3000 }) },
+    ],
+  },
+  {
+    id: 'ospf',
+    title: 'OSPF in one area',
+    level: 'Intermediate',
+    summary: 'Let link-state routing pick the fastest path, and watch it reroute when a link fails.',
+    build(net) {
+      dev(net, 'router', 'R1', -220, 0);
+      dev(net, 'router', 'R2', 0, -130);
+      dev(net, 'router', 'R3', 0, 130);
+      dev(net, 'router', 'R4', 220, 0);
+      dev(net, 'pc', 'PC1', -400, 0);
+      dev(net, 'pc', 'PC4', 400, 0);
+      wire(net, 'PC1', 'FastEthernet0', 'R1', 'GigabitEthernet0/0');
+      wire(net, 'R1', 'GigabitEthernet0/1', 'R2', 'GigabitEthernet0/0');
+      wire(net, 'R1', 'GigabitEthernet0/2', 'R3', 'GigabitEthernet0/0');
+      wire(net, 'R2', 'GigabitEthernet0/1', 'R4', 'GigabitEthernet0/1');
+      wire(net, 'R3', 'GigabitEthernet0/1', 'R4', 'GigabitEthernet0/2');
+      wire(net, 'PC4', 'FastEthernet0', 'R4', 'GigabitEthernet0/0');
+      const cfg = [
+        ['R1', 'GigabitEthernet0/0', '10.1.0.1', '255.255.255.0'], ['R1', 'GigabitEthernet0/1', '10.12.0.1', '255.255.255.252'], ['R1', 'GigabitEthernet0/2', '10.13.0.1', '255.255.255.252'],
+        ['R2', 'GigabitEthernet0/0', '10.12.0.2', '255.255.255.252'], ['R2', 'GigabitEthernet0/1', '10.24.0.1', '255.255.255.252'],
+        ['R3', 'GigabitEthernet0/0', '10.13.0.2', '255.255.255.252'], ['R3', 'GigabitEthernet0/1', '10.34.0.1', '255.255.255.252'],
+        ['R4', 'GigabitEthernet0/0', '10.4.0.1', '255.255.255.0'], ['R4', 'GigabitEthernet0/1', '10.24.0.2', '255.255.255.252'], ['R4', 'GigabitEthernet0/2', '10.34.0.2', '255.255.255.252'],
+      ];
+      for (const [r, i, ip, m] of cfg) { const d = find(net, r); const f = d.getIface(i); f.ip = ip; f.mask = m; d.getPort(i).shutdown = false; net.notifyPort(d.getPort(i)); }
+      // The path through R2 is a slow 10 Mbit/s line
+      for (const [r, i] of [['R1', 'GigabitEthernet0/1'], ['R2', 'GigabitEthernet0/0'], ['R2', 'GigabitEthernet0/1'], ['R4', 'GigabitEthernet0/1']]) find(net, r).getIface(i).bandwidth = 10000;
+      find(net, 'PC1').setStatic({ ip: '10.1.0.10', mask: '255.255.255.0', gateway: '10.1.0.1' });
+      find(net, 'PC4').setStatic({ ip: '10.4.0.10', mask: '255.255.255.0', gateway: '10.4.0.1' });
+    },
+    guide: `<p>Four routers in a ring. Both paths from PC1 to PC4 have two router hops, but the links through R2 run at 10 Mbit/s (<code>bandwidth 10000</code>) and the links through R3 at 1 Gbit/s. RIP only counts hops, so it can't tell them apart. OSPF can.</p>
+      <ol>
+        <li>On each router: <code>router ospf 1</code>, then <code>network 10.0.0.0 0.255.255.255 area 0</code>. The wildcard mask says which interfaces join area 0.</li>
+        <li>Wait about 40 seconds (or press <b>Skip 30 s</b> twice in simulation mode) while the routers elect a designated router. Then check <code>show ip ospf neighbor</code> on R1: both neighbours should be <b>FULL</b>.</li>
+        <li>Run <code>show ip route ospf</code> on R1. The <b>O</b> route to 10.4.0.0/24 shows <code>[110/3]</code>: distance 110 and a total cost of 3, through R3. Each link costs 100 Mbit/s divided by its bandwidth (at least 1), so the R2 path would cost 21.</li>
+        <li>Look at <code>show ip ospf database</code>: every router holds the same map of the network, built from router and network LSAs.</li>
+        <li>Shut down R1's G0/2 and check the routing table again. OSPF reruns its shortest-path calculation and moves the route to R2 with cost 21.</li>
+      </ol>
+      <p class="note">In simulation mode you can follow hellos, database descriptions, link-state requests, updates and acknowledgements. Untick OSPF in the filters to hide them.</p>`,
+    checks: [
+      { text: 'OSPF runs on all four routers with a network statement in area 0', fn: (n) => ['R1', 'R2', 'R3', 'R4'].every((r) => find(n, r).ospf.enabled && find(n, r).ospf.networks.some((x) => x.area === 0)) },
+      { text: 'R1 learns PC4\'s network (10.4.0.0/24) from OSPF through R3, the faster path', fn: (n) => ospfRouteVia(n, 'R1', '10.4.0.0', '10.13.0.2') },
+      { text: 'PC1 can ping PC4', fn: (n) => canReach(n, 'PC1', '10.4.0.10', { warmup: OSPF_WARMUP }) },
+      { text: 'PC1 still reaches PC4 when the link from R1 to R3 fails', fn: (n) => canReach(withPortDown(n, 'R1', 'GigabitEthernet0/2'), 'PC1', '10.4.0.10', { warmup: OSPF_WARMUP }) },
     ],
   },
   {
