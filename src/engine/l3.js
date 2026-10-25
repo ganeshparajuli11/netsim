@@ -17,7 +17,8 @@ export class L3Device extends Device {
     this.arp = new Map();
     this.arpWait = new Map();
     this.staticRoutes = [];
-    this.dynamicRoutes = [];
+    this.dynamicRoutes = [];   // RIP
+    this.ospfRoutes = [];      // OSPF
     this.forwarding = false;
     this.proxyArp = false;
     this.queueOnArp = true;
@@ -92,7 +93,7 @@ export class L3Device extends Device {
       const r = viaConnected(this.defaultGateway);
       if (r) all.push({ proto: 'S', network: '0.0.0.0', mask: '0.0.0.0', iface: r.iface, nextHop: this.defaultGateway, ad: 1, metric: 0, gateway: true });
     }
-    for (const d of this.dynamicRoutes) {
+    for (const d of [...this.dynamicRoutes, ...(this.ospfRoutes || [])]) {
       if (this.ifaceUp(d.iface)) all.push({ ...d, ad: d.ad ?? AD[d.proto] ?? 200 });
     }
     // keep the lowest administrative distance per prefix (ties = ECMP)

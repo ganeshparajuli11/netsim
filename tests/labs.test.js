@@ -73,6 +73,9 @@ const SOLUTIONS = {
   rip: (n) => {
     for (const r of ['R1', 'R2', 'R3']) ios(n.findDevice(r)).run('en\nconf t\nrouter rip\nversion 2\nno auto-summary\nnetwork 10.0.0.0\nend');
   },
+  ospf: (n) => {
+    for (const r of ['R1', 'R2', 'R3', 'R4']) ios(n.findDevice(r)).run('en\nconf t\nrouter ospf 1\nnetwork 10.0.0.0 0.255.255.255 area 0\nend');
+  },
   acl: (n) => ios(n.findDevice('R1')).run(`en
       conf t
       access-list 10 deny host 192.168.1.50

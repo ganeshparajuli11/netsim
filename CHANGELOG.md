@@ -2,6 +2,16 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.4.0 (2026-10-25)
+
+- OSPF, part 2: routes. Each router describes its links in a router LSA, and the DR of each segment describes the segment in a network LSA. Database descriptions now carry LSA headers; missing LSAs are fetched with link-state requests (state LOADING), and changes are flooded in link-state updates that are resent every 5 s until acknowledged.
+- After every change to the database, routers run Dijkstra's shortest-path-first algorithm and install `O` routes with distance 110 (so OSPF beats RIP). Equal-cost paths are both installed. Routes move to the backup path when a link fails or a neighbour goes quiet.
+- Interface cost is 100 Mbit/s divided by the interface bandwidth (at least 1). New commands: `bandwidth <kbit/s>` on router interfaces (also shown in `show interfaces`), `ip ospf cost <n>` and `auto-cost reference-bandwidth <Mbit/s>`.
+- New show commands: `show ip route ospf`, `show ip ospf database`, `show ip ospf interface brief`, and an OSPF section in `show ip protocols` (router ID, networks, passive interfaces, reference bandwidth, routing information sources).
+- The packet inspector names all five OSPF packet types and lists the LSAs inside requests, updates and acknowledgements.
+- New lab: "OSPF in one area", where OSPF picks the faster of two two-hop paths and reroutes when a link fails.
+- Saved files keep the new settings; files saved by older versions open with the defaults.
+
 ## 0.3.0 (2026-10-24)
 
 - OSPF, part 1: neighbours. `router ospf <id>`, `network <ip> <wildcard> area <n>` (the most specific statement wins), `router-id`, `passive-interface` and `log-adjacency-changes`. The router ID is the configured one, or else the highest address on an interface that is up.

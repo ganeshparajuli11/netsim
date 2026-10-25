@@ -8,6 +8,7 @@ import {
   compressRange, wildcardToMask,
 } from '../engine/util.js';
 import { addrToString } from '../engine/acl.js';
+import { bandwidthKbps } from '../engine/ospf.js';
 
 const CONFIG_MODES = ['config', 'config-if', 'config-subif', 'config-if-range', 'config-vlan', 'dhcp-config', 'config-router', 'config-line'];
 const IF_MODES = ['config-if', 'config-subif', 'config-if-range'];
@@ -162,7 +163,7 @@ C.add('priv', ['show startup-config'], function () {
 C.add(EXEC, ['show ip interface brief', 'show ip int brief'], function () { this.showIpIntBrief(); });
 C.add(EXEC, ['show interfaces', 'show interfaces <if>'], function ([n]) { this.showInterfaces(n); });
 C.add(EXEC, ['show ip route', 'show ip route <ip>'], function ([ip]) { this.showIpRoute(ip); });
-C.add(EXEC, ['show ip route static|connected|rip'], function ([kind]) { this.need('router') && this.showIpRoute(null, { static: 'S', connected: 'C', rip: 'R' }[kind]); });
+C.add(EXEC, ['show ip route static|connected|rip|ospf'], function ([kind]) { this.need('router') && this.showIpRoute(null, { static: 'S', connected: 'C', rip: 'R', ospf: 'O' }[kind]); });
 C.add(EXEC, ['show arp', 'show ip arp'], function () { this.showArp(); });
 C.add(EXEC, ['show cdp neighbors', 'show cdp neighbors detail'], function ([d]) { this.showCdp(); });
 C.add(EXEC, ['show mac address-table', 'show mac-address-table'], function () { this.need('switch') && this.showMacTable(); });
@@ -174,6 +175,8 @@ C.add(EXEC, ['show ip dhcp binding'], function () { this.need('router') && this.
 C.add(EXEC, ['show ip dhcp pool'], function () { this.need('router') && this.showDhcpPool(); });
 C.add(EXEC, ['show access-lists', 'show ip access-lists', 'show access-lists <n>'], function ([n]) { this.need('router') && this.showAcl(n); });
 C.add(EXEC, ['show ip ospf neighbor', 'show ip ospf neighbor <if>'], function ([n]) { this.need('router') && this.showOspfNeighbors(n); });
+C.add(EXEC, ['show ip ospf database'], function () { this.need('router') && this.showOspfDatabase(); });
+C.add(EXEC, ['show ip ospf interface brief'], function () { this.need('router') && this.showOspfIfBrief(); });
 C.add(EXEC, ['show ip protocols'], function () { this.need('router') && this.showProtocols(); });
 
 // ---------- global config ----------
@@ -248,9 +251,15 @@ C.add(IF_MODES, ['shutdown'], function () { this.eachIface((i) => this.setShutdo
 C.add(IF_MODES, ['no shutdown'], function () { this.eachIface((i) => this.setShutdown(i, false)); });
 C.add(IF_MODES, ['description <line>'], function ([t]) { this.eachIface((i) => { i.description = t; if (i.port?.sw) i.port.sw.description = t; }); });
 C.add(IF_MODES, ['no description'], function () { this.eachIface((i) => { i.description = ''; if (i.port?.sw) i.port.sw.description = ''; }); });
-C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'switchport port-security', 'cdp enable', 'no cdp enable', 'bandwidth <n>', 'clock rate <n>'], function () {});
-const OSPF_IF = { 'hello-interval': ['hello', 1, 65535], 'dead-interval': ['dead', 1, 65535], priority: ['priority', 0, 255] };
-C.add(['config-if', 'config-subif'], ['ip ospf hello-interval|dead-interval|priority <n>'], function ([kind, v]) {
+C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'switchport port-security', 'cdp enable', 'no cdp enable', 'clock rate <n>'], function () {});
+C.add(IF_MODES, ['bandwidth <n>'], function ([kbps]) {
+  if (kbps < 1 || kbps > 10000000) { this.print('% Bandwidth must be between 1 and 10000000 kbit/s\n'); return; }
+  this.eachIface((i) => { if (!i.isPort) i.bandwidth = kbps; });
+  this.changed();
+});
+C.add(IF_MODES, ['no bandwidth', 'no bandwidth <n>'], function () { this.eachIface((i) => { if (!i.isPort) delete i.bandwidth; }); this.changed(); });
+const OSPF_IF = { 'hello-interval': ['hello', 1, 65535], 'dead-interval': ['dead', 1, 65535], priority: ['priority', 0, 255], cost: ['cost', 1, 65535] };
+C.add(['config-if', 'config-subif'], ['ip ospf hello-interval|dead-interval|priority|cost <n>'], function ([kind, v]) {
   if (!this.need('router')) return;
   const [key, lo, hi] = OSPF_IF[kind];
   if (v < lo || v > hi) { this.print(`% Value must be between ${lo} and ${hi}\n`); return; }
@@ -258,7 +267,7 @@ C.add(['config-if', 'config-subif'], ['ip ospf hello-interval|dead-interval|prio
   i.ospf = { ...(i.ospf || {}), [key]: v };
   this.changed();
 });
-C.add(['config-if', 'config-subif'], ['no ip ospf hello-interval|dead-interval|priority', 'no ip ospf hello-interval|dead-interval|priority <n>'], function ([kind]) {
+C.add(['config-if', 'config-subif'], ['no ip ospf hello-interval|dead-interval|priority|cost', 'no ip ospf hello-interval|dead-interval|priority|cost <n>'], function ([kind]) {
   if (!this.need('router')) return;
   const i = this.ctx.iface;
   const o = { ...(i.ospf || {}) };
@@ -341,6 +350,12 @@ C.add('config-router', ['router-id <ip>'], ospfOnly(function ([rid]) {
 C.add('config-router', ['no router-id'], ospfOnly(function () {
   if (!this.d.ospf.clearRouterId()) this.print('% OSPF: Reload or use "clear ip ospf process" command, for this to take effect\n');
 }));
+C.add('config-router', ['auto-cost reference-bandwidth <n>'], ospfOnly(function ([mbps]) {
+  if (mbps < 1 || mbps > 4294967) { this.print('% Reference bandwidth must be between 1 and 4294967 Mbit/s\n'); return; }
+  this.d.ospf.setReferenceBw(mbps);
+  this.print('% OSPF: Reference bandwidth is changed.\n        Please ensure reference bandwidth is consistent across all routers.\n');
+}));
+C.add('config-router', ['no auto-cost reference-bandwidth', 'no auto-cost reference-bandwidth <n>', 'no auto-cost'], ospfOnly(function () { this.d.ospf.setReferenceBw(100); }));
 C.add('config-router', ['log-adjacency-changes', 'log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = true; }));
 C.add('config-router', ['no log-adjacency-changes', 'no log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = false; }));
 
@@ -826,7 +841,7 @@ Configuration register is 0x2102
       if (desc) lines.push(`  Description: ${desc}`);
       if (i.ip) lines.push(`  Internet address is ${i.ip}/${maskToPrefix(i.mask)}`);
       if (i.parent) lines.push(`  Encapsulation 802.1Q Virtual LAN, Vlan ID  ${i.vlan ?? 'not set'}${i.nativeVlan ? ' (native)' : ''}`);
-      else lines.push(`  MTU 1500 bytes, BW ${/^Gig/.test(i.name) ? '1000000' : '100000'} Kbit, DLY 10 usec`);
+      else lines.push(`  MTU 1500 bytes, BW ${d.type === 'router' ? bandwidthKbps(i) : /^Gig/.test(i.name) ? '1000000' : '100000'} Kbit, DLY 10 usec`);
       lines.push('');
     }
     this.print(lines.join('\n') + '\n');
@@ -853,7 +868,7 @@ Configuration register is 0x2102
         if (r.exitIface && !r.nextHop) return `${code}${pfx} is directly connected, ${r.iface.name}`;
         return `${code}${pfx} [${r.ad}/${r.metric}] via ${r.nextHop}`;
       }
-      if (r.proto === 'R') return `${code}${pfx} [${r.ad}/${r.metric}] via ${r.nextHop}, ${uptime(d.now - (r.time || 0))}, ${r.iface.name}`;
+      if (r.proto === 'R' || r.proto === 'O') return `${code}${pfx} [${r.ad}/${r.metric}] via ${r.nextHop}, ${uptime(d.now - (r.time || 0))}, ${r.iface.name}`;
       return `${code}${pfx} via ${r.nextHop}`;
     };
     if (only) {
@@ -861,7 +876,10 @@ Configuration register is 0x2102
       if (!l) { this.print('% Network not in table\n'); return; }
       const r = l.route;
       const isDefault = r.network === '0.0.0.0' && r.mask === '0.0.0.0';
-      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}${isDefault ? ', supernet' : ''}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip' }[r.proto]}", distance ${r.ad}, metric ${r.metric}${isDefault ? ', candidate default path' : ''}\n  Routing Descriptor Blocks:\n  * ${r.nextHop || 'directly connected'}, via ${r.iface.name}\n`);
+      // every installed path for this prefix (equal-cost paths share the load)
+      const paths = routes.filter((x) => x.network === r.network && x.mask === r.mask && x.proto === r.proto);
+      const blocks = paths.map((x, k) => `  ${k === 0 ? '*' : ' '} ${x.nextHop || 'directly connected'}, via ${x.iface.name}`).join('\n');
+      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}${isDefault ? ', supernet' : ''}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip', O: `ospf ${d.ospf?.processId}` }[r.proto]}", distance ${r.ad}, metric ${r.metric}${isDefault ? ', candidate default path' : ''}\n  Routing Descriptor Blocks:\n${blocks}\n`);
       return;
     }
     if (protoFilter) {
@@ -1045,8 +1063,13 @@ Interface        Role Sts Cost      Prio.Nbr Type
   }
 
   showProtocols() {
+    const parts = [this.ripProtocolText(), this.ospfProtocolText()].filter(Boolean);
+    this.print(parts.length ? parts.join('\n') : '\n');
+  }
+
+  ripProtocolText() {
     const rip = this.d.rip;
-    if (!rip.enabled) { this.print('\n'); return; }
+    if (!rip.enabled) return '';
     const sources = new Map();
     for (const r of rip.routes.values()) sources.set(r.nextHop, r.time);
     let out = `Routing Protocol is "rip"
@@ -1064,6 +1087,53 @@ Default version control: send version 2, receive 2
     out += 'Routing Information Sources:\n\tGateway         Distance      Last Update\n';
     for (const [g, t] of sources) out += `\t${g.padEnd(16)}120           ${uptime(this.d.now - t)}\n`;
     out += 'Distance: (default is 120)\n';
+    return out;
+  }
+
+  ospfProtocolText() {
+    const o = this.d.ospf;
+    if (!o.enabled) return '';
+    const areas = new Set([...o.ifs.values()].map((st) => st.area));
+    let out = `Routing Protocol is "ospf ${o.processId}"
+  Outgoing update filter list for all interfaces is not set
+  Incoming update filter list for all interfaces is not set
+  Router ID ${o.routerId || '0.0.0.0'}
+  Number of areas in this router is ${areas.size}. ${areas.size} normal 0 stub 0 nssa
+  Maximum path: 4
+  Reference bandwidth unit is ${o.referenceBw} mbps
+  Routing for Networks:
+${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}${o.networks.length ? '\n' : ''}`;
+    if (o.passive.size) out += `  Passive Interface(s):\n${[...o.passive].map((n) => `    ${n}`).join('\n')}\n`;
+    out += '  Routing Information Sources:\n    Gateway         Distance      Last Update\n';
+    for (const src of o.sources()) out += `    ${src.rid.padEnd(16)}110           ${uptime(this.d.now - src.born)}\n`;
+    out += '  Distance: (default is 110)\n';
+    return out;
+  }
+
+  showOspfDatabase() {
+    const o = this.d.ospf;
+    if (!o.enabled) { this.print('\n'); return; }
+    const live = [...o.lsdb.values()].filter((l) => !l.maxAge).sort((a, b) => ipToInt(a.id) - ipToInt(b.id) || ipToInt(a.adv) - ipToInt(b.adv));
+    const age = (l) => String(Math.min(3600, Math.floor((this.d.now - (l.born ?? 0)) / 1000)));
+    const seq = (l) => `0x${(l.seq >>> 0).toString(16).padStart(8, '0')}`;
+    let out = `\n            OSPF Router with ID (${o.routerId}) (Process ID ${o.processId})\n`;
+    out += `\n                Router Link States (Area ${o.mainArea()})\n\nLink ID         ADV Router      Age         Seq#       Link count\n`;
+    for (const l of live.filter((x) => x.type === 'router')) out += `${l.id.padEnd(16)}${l.adv.padEnd(16)}${age(l).padEnd(12)}${seq(l)} ${(l.links || []).length}\n`;
+    const nets = live.filter((x) => x.type === 'network');
+    if (nets.length) {
+      out += `\n                Net Link States (Area ${o.mainArea()})\n\nLink ID         ADV Router      Age         Seq#       Routers\n`;
+      for (const l of nets) out += `${l.id.padEnd(16)}${l.adv.padEnd(16)}${age(l).padEnd(12)}${seq(l)} ${l.attached.length}\n`;
+    }
+    this.print(out);
+  }
+
+  showOspfIfBrief() {
+    const o = this.d.ospf;
+    if (!o.enabled) { this.print('\n'); return; }
+    let out = 'Interface    PID   Area            IP Address/Mask    Cost  State Nbrs F/C\n';
+    for (const r of o.interfaceRows()) {
+      out += `${shortIf(r.iface).padEnd(13)}${String(o.processId).padEnd(6)}${String(r.area).padEnd(16)}${`${r.ip}/${maskToPrefix(r.mask)}`.padEnd(19)}${String(r.cost).padEnd(6)}${r.state.padEnd(6)}${r.full}/${r.count}\n`;
+    }
     this.print(out);
   }
 
@@ -1090,6 +1160,7 @@ Default version control: send version 2, receive 2
         L.push(`interface ${i.name}`);
         if (i.description) L.push(` description ${i.description}`);
         if (i.parent && i.vlan !== null) L.push(` encapsulation dot1Q ${i.vlan}${i.nativeVlan ? ' native' : ''}`);
+        if (i.bandwidth) L.push(` bandwidth ${i.bandwidth}`);
         if (i.ip) L.push(` ip address ${i.ip} ${i.mask}`); else L.push(' no ip address');
         for (const h of i.helpers || []) L.push(` ip helper-address ${h}`);
         if (i.aclIn) L.push(` ip access-group ${i.aclIn} in`);
@@ -1097,6 +1168,7 @@ Default version control: send version 2, receive 2
         if (i.ospf?.hello !== undefined) L.push(` ip ospf hello-interval ${i.ospf.hello}`);
         if (i.ospf?.dead !== undefined) L.push(` ip ospf dead-interval ${i.ospf.dead}`);
         if (i.ospf?.priority !== undefined) L.push(` ip ospf priority ${i.ospf.priority}`);
+        if (i.ospf?.cost !== undefined) L.push(` ip ospf cost ${i.ospf.cost}`);
         if (!i.parent) L.push(' duplex auto', ' speed auto');
         if (i.parent ? i.shutdown : i.port.shutdown) L.push(' shutdown');
         L.push('!');
@@ -1113,6 +1185,7 @@ Default version control: send version 2, receive 2
         L.push(`router ospf ${d.ospf.processId}`);
         if (d.ospf.routerIdConfigured) L.push(` router-id ${d.ospf.routerIdConfigured}`);
         L.push(d.ospf.logAdjacency ? ' log-adjacency-changes' : ' no log-adjacency-changes');
+        if (d.ospf.referenceBw !== 100) L.push(` auto-cost reference-bandwidth ${d.ospf.referenceBw}`);
         for (const p of d.ospf.passive) L.push(` passive-interface ${p}`);
         for (const n of d.ospf.networks) L.push(` network ${n.ip} ${n.wildcard} area ${n.area}`);
         L.push('!');

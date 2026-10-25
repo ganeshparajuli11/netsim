@@ -6,6 +6,7 @@ import { Device } from '../engine/device.js';
 import { IosCli } from '../cli/ios.js';
 import { HostCmd } from '../cli/hostcmd.js';
 import { formatMac, maskToPrefix } from '../engine/util.js';
+import { describeLsa } from '../engine/ospf.js';
 import { Canvas, shortPort, firstIp } from './canvas.js';
 import { WindowManager } from './devicewin.js';
 import { iconSvg, PROTO_COLORS } from './icons.js';
@@ -592,15 +593,19 @@ class App {
         else if (p.dstPort === 53 || p.srcPort === 53) layers.push(['DNS', 'layer 7', kv({ Kind: m.qr ? 'Response' : 'Query', Name: m.name, Type: m.type, Answer: m.qr ? m.answer || 'not found' : undefined })]);
         else if (p.dstPort === 520) layers.push(['RIP v2', 'layer 7', `<dl class="kv">${(m.entries || []).map((e) => `<dt>${e.network}/${maskToPrefix(e.mask)}</dt><dd>metric ${e.metric}${e.metric >= 16 ? ' (unreachable)' : ''}</dd>`).join('')}</dl>`]);
       } else if (ip.proto === 'OSPF') {
-        const ospfFields = { Type: p.type === 'Hello' ? '1 (Hello)' : '2 (Database description)', 'Router ID': p.routerId, Area: p.area };
+        const typeNames = { Hello: '1 (Hello)', DBD: '2 (Database description)', LSR: '3 (Link-state request)', LSU: '4 (Link-state update)', LSAck: '5 (Link-state acknowledgement)' };
+        const ospfFields = { Type: typeNames[p.type] || p.type, 'Router ID': p.routerId, Area: p.area };
         if (p.type === 'Hello') {
           Object.assign(ospfFields, {
             'Network mask': p.mask, 'Hello interval': `${p.hello} s`, 'Dead interval': `${p.dead} s`, Priority: p.priority,
             'Designated router': p.dr, 'Backup designated router': p.bdr,
             'Neighbours seen': p.neighbors?.length ? p.neighbors.join(', ') : 'none yet',
           });
-        } else {
+        } else if (p.type === 'DBD') {
           Object.assign(ospfFields, { Role: p.master ? 'master' : 'slave', Acknowledges: p.ack ? 'yes' : 'no', 'LSA headers': p.lsas?.length || 0 });
+        } else {
+          const list = p.type === 'LSR' ? p.requests : p.lsas;
+          ospfFields[p.type === 'LSU' ? 'LSAs' : 'LSA headers'] = (list || []).map(describeLsa).join('; ') || 'none';
         }
         layers.push(['OSPF', 'layer 3, IP protocol 89', kv(ospfFields)]);
       } else if (ip.proto === 'TCP') {

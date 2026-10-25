@@ -1,9 +1,9 @@
-// Router: routed interfaces, 802.1Q sub-interfaces, static routes, RIPv2, OSPF neighbours, DHCP server/relay, ACLs.
+// Router: routed interfaces, 802.1Q sub-interfaces, static routes, RIPv2, OSPF, DHCP server/relay, ACLs.
 
 import { L3Device } from './l3.js';
 import { DhcpServer } from './dhcp.js';
 import { Rip } from './rip.js';
-import { Ospf } from './ospf.js';
+import { Ospf, validInt } from './ospf.js';
 import { Acl } from './acl.js';
 
 export class Router extends L3Device {
@@ -98,7 +98,7 @@ export class Router extends L3Device {
   resetConfig() {
     this.ifaces = this.ifaces.filter((i) => !i.parent);
     for (const i of this.ifaces) {
-      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null, ospf: undefined });
+      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null, ospf: undefined, bandwidth: undefined });
       i.port.shutdown = true;
     }
     this.staticRoutes = [];
@@ -127,6 +127,7 @@ export class Router extends L3Device {
         sub: !!i.parent, mac: i.mac, helpers: i.helpers || [], aclIn: i.aclIn || null, aclOut: i.aclOut || null,
         rip: i.ripPassive ? { passive: true } : undefined,
         ospf: i.ospf && Object.keys(i.ospf).length ? { ...i.ospf } : undefined,
+        bandwidth: i.bandwidth || undefined,
       })),
       staticRoutes: this.staticRoutes,
       dhcp: this.dhcpServer.save(),
@@ -154,6 +155,7 @@ export class Router extends L3Device {
       i.aclOut = ic.aclOut || null;
       i.ripPassive = !!ic.rip?.passive;
       i.ospf = ic.ospf ? { ...ic.ospf } : undefined;
+      i.bandwidth = validInt(ic.bandwidth, 1, 10000000);
       if (ic.sub) { i.shutdown = !!ic.shutdown; i.vlan = ic.vlan ?? null; i.nativeVlan = !!ic.nativeVlan; }
       else {
         i.port.shutdown = !!ic.shutdown;
