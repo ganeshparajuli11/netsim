@@ -220,3 +220,88 @@ test('bandwidth, ip ospf cost and reference bandwidth survive save and load; old
   legacy.runFor(70000);
   assert.equal(oRoutes(l1, '10.4.0.0').length, 2, 'equal costs without the bandwidth settings');
 });
+
+test('no router ospf withdraws the router\'s LSAs at once, without waiting for the dead interval', () => {
+  const { net, R } = ring();
+  allOspf(R);
+  net.runFor(70000);
+  const rid = R.R4.ospf.routerId;
+  ios(R.R4).run('en\nconf t\nno router ospf 1\nend');
+  net.runFor(2000);
+  assert.equal(oRoutes(R.R1, '10.4.0.0').length, 0);
+  assert.ok(R.R1.ospf.lsdb.get(`router:${rid}:${rid}`).maxAge, 'R1 holds the withdrawn copy');
+  assert.doesNotMatch(ios(R.R1).run('en\nshow ip ospf database'), new RegExp(`^${rid.replace(/\./g, '\\.')}\\s+${rid.replace(/\./g, '\\.')}`, 'm'));
+});
+
+test('show ip route <ip> lists every equal-cost path', () => {
+  const { net, R } = ring({ slowR2: false });
+  allOspf(R);
+  net.runFor(70000);
+  const o = ios(R.R1).run('en\nshow ip route 10.4.0.10');
+  assert.match(o, /\* 10\.12\.0\.2, via GigabitEthernet0\/1\n {4}10\.13\.0\.2, via GigabitEthernet0\/2|\* 10\.13\.0\.2, via GigabitEthernet0\/2\n {4}10\.12\.0\.2, via GigabitEthernet0\/1/);
+});
+
+test('equal-cost paths through a directly attached LAN and through a neighbour are both kept', () => {
+  // R1, R2 and R3 share a LAN (R1's side costs 2); R1 and R2 also have a direct link (cost 1).
+  // R3's stub network costs 3 from R1 either straight across the LAN or through R2.
+  const net = new Network();
+  const sw = createDevice(net, 'switch', { name: 'S1' });
+  const [r1, r2, r3] = [1, 2, 3].map((k) => createDevice(net, 'router', { name: `R${k}` }));
+  const pc = createDevice(net, 'pc', { name: 'PC3' });
+  [r1, r2, r3].forEach((r, k) => net.connect(r.getPort('GigabitEthernet0/0'), sw.ports[k]));
+  net.connect(r1.getPort('GigabitEthernet0/1'), r2.getPort('GigabitEthernet0/1'));
+  net.connect(r3.getPort('GigabitEthernet0/1'), pc.getPort('FastEthernet0'));
+  ios(r1).run('en\nconf t\nint g0/0\nip address 10.0.0.1 255.255.255.0\nip ospf cost 2\nno shut\nint g0/1\nip address 10.12.0.1 255.255.255.252\nno shut\nend');
+  ios(r2).run('en\nconf t\nint g0/0\nip address 10.0.0.2 255.255.255.0\nno shut\nint g0/1\nip address 10.12.0.2 255.255.255.252\nno shut\nend');
+  ios(r3).run('en\nconf t\nint g0/0\nip address 10.0.0.3 255.255.255.0\nno shut\nint g0/1\nip address 192.168.3.1 255.255.255.0\nno shut\nend');
+  for (const r of [r1, r2, r3]) ospfOn(r, 'network 0.0.0.0 255.255.255.255 area 0');
+  net.runFor(80000);
+  const paths = oRoutes(r1, '192.168.3.0').map((x) => `${x.nextHop}/${x.metric}`).sort();
+  assert.deepEqual(paths, ['10.0.0.3/3', '10.12.0.2/3']);
+});
+
+test('a DR that changes its router ID does not leave a stale network LSA behind', () => {
+  const net = new Network();
+  const r1 = createDevice(net, 'router', { name: 'R1' });
+  const r2 = createDevice(net, 'router', { name: 'R2' });
+  const pc = createDevice(net, 'pc', { name: 'PC2' });
+  net.connect(r1.getPort('GigabitEthernet0/0'), r2.getPort('GigabitEthernet0/0'));
+  net.connect(r2.getPort('GigabitEthernet0/1'), pc.getPort('FastEthernet0'));
+  ios(r1).run('en\nconf t\nint g0/0\nip address 10.1.0.1 255.255.255.252\nip ospf priority 0\nno shut\nend');
+  ios(r2).run('en\nconf t\nint g0/0\nip address 10.1.0.2 255.255.255.252\nno shut\nint g0/1\nip address 192.168.2.1 255.255.255.0\nno shut\nend');
+  ospfOn(r1, 'network 10.0.0.0 0.255.255.255 area 0');
+  ospfOn(r2, 'router-id 2.2.2.2\nnetwork 0.0.0.0 255.255.255.255 area 0');
+  net.runFor(70000);
+  assert.equal(oRoutes(r1, '192.168.2.0')[0]?.nextHop, '10.1.0.2');
+  ospfOn(r2, 'router-id 9.9.9.9');
+  ios(r2).run('en\nclear ip ospf process');
+  net.runFor(70000);
+  assert.ok(r1.ospf.lsdb.get('network:10.1.0.2:2.2.2.2').maxAge, 'the old identity\'s network LSA was withdrawn');
+  assert.equal(oRoutes(r1, '192.168.2.0')[0]?.nextHop, '10.1.0.2');
+});
+
+test('show ip ospf database names the area in use', () => {
+  const { net, R } = ring();
+  for (const r of Object.values(R)) ospfOn(r, 'network 10.0.0.0 0.255.255.255 area 1');
+  net.runFor(70000);
+  const db = ios(R.R1).run('en\nshow ip ospf database');
+  assert.match(db, /Router Link States \(Area 1\)/);
+  assert.match(db, /Net Link States \(Area 1\)/);
+  assert.equal(oRoutes(R.R1, '10.4.0.0')[0]?.nextHop, '10.13.0.2');
+});
+
+test('malformed bandwidth and cost values in a file fall back to defaults', () => {
+  const { net, R } = ring({ slowR2: false });
+  allOspf(R);
+  const data = JSON.parse(JSON.stringify(serializeNetwork(net)));
+  const r1 = data.devices.find((d) => d.name === 'R1' || d.config?.hostname === 'R1');
+  for (const i of r1.config.ifaces) { i.bandwidth = 'fast'; i.ospf = { cost: -3 }; }
+  r1.config.ospf.referenceBw = 'lots';
+  const copy = loadNetwork(data, new Network());
+  const c1 = copy.findDevice('R1');
+  assert.equal(c1.ospf.referenceBw, 100);
+  assert.equal(c1.ospf.ifaceCost(c1.getIface('GigabitEthernet0/1')), 1);
+  copy.runFor(70000);
+  for (const x of oRoutes(c1)) assert.ok(Number.isFinite(x.metric));
+  assert.equal(oRoutes(c1, '10.4.0.0').length, 2);
+});

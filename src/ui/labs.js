@@ -346,6 +346,7 @@ export const LABS = [
         <li>Run <code>show ip route ospf</code> on R1. The <b>O</b> route to 10.4.0.0/24 shows <code>[110/3]</code>: distance 110 and a total cost of 3, through R3. Each link costs 100 Mbit/s divided by its bandwidth (at least 1), so the R2 path would cost 21.</li>
         <li>Look at <code>show ip ospf database</code>: every router holds the same map of the network, built from router and network LSAs.</li>
         <li>Shut down R1's G0/2 and check the routing table again. OSPF reruns its shortest-path calculation and moves the route to R2 with cost 21.</li>
+        <li>Bring G0/2 back with <code>no shutdown</code> before you check your work. The checks test the failover in a copy of your network.</li>
       </ol>
       <p class="note">In simulation mode you can follow hellos, database descriptions, link-state requests, updates and acknowledgements. Untick OSPF in the filters to hide them.</p>`,
     checks: [

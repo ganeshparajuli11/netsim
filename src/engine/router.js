@@ -3,7 +3,7 @@
 import { L3Device } from './l3.js';
 import { DhcpServer } from './dhcp.js';
 import { Rip } from './rip.js';
-import { Ospf } from './ospf.js';
+import { Ospf, validInt } from './ospf.js';
 import { Acl } from './acl.js';
 
 export class Router extends L3Device {
@@ -155,7 +155,7 @@ export class Router extends L3Device {
       i.aclOut = ic.aclOut || null;
       i.ripPassive = !!ic.rip?.passive;
       i.ospf = ic.ospf ? { ...ic.ospf } : undefined;
-      i.bandwidth = ic.bandwidth || undefined;
+      i.bandwidth = validInt(ic.bandwidth, 1, 10000000);
       if (ic.sub) { i.shutdown = !!ic.shutdown; i.vlan = ic.vlan ?? null; i.nativeVlan = !!ic.nativeVlan; }
       else {
         i.port.shutdown = !!ic.shutdown;

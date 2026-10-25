@@ -20,7 +20,7 @@ const INITIAL_SEQ = 0x80000001;
 
 /** Interface bandwidth in kbit/s: the "bandwidth" command, else the port's line rate. */
 export function bandwidthKbps(i) {
-  if (i.bandwidth) return i.bandwidth;
+  if (Number.isInteger(i.bandwidth) && i.bandwidth > 0) return i.bandwidth;
   if (i.parent) return bandwidthKbps(i.parent);
   if (/^gig/i.test(i.name)) return 1000000;
   if (/^fast/i.test(i.name)) return 100000;
@@ -77,7 +77,8 @@ export class Ospf {
 
   /** Cost of an interface: "ip ospf cost", else reference bandwidth / interface bandwidth. */
   ifaceCost(i) {
-    if (i.ospf?.cost) return i.ospf.cost;
+    const fixed = validInt(i.ospf?.cost, 1, 65535);
+    if (fixed) return fixed;
     return Math.max(1, Math.min(65535, Math.floor((this.referenceBw * 1000) / bandwidthKbps(i))));
   }
 
@@ -97,6 +98,7 @@ export class Ospf {
   }
 
   disable() {
+    this.flushOwn();
     this.quiet++;
     for (const st of this.ifs.values()) this.stopIface(st, 'Interface down or detached');
     this.quiet--;
@@ -136,6 +138,7 @@ export class Ospf {
   /** "clear ip ospf process": drop every neighbour and start again (picks up a new router ID). */
   restart() {
     if (!this.enabled) return;
+    this.flushOwn();
     this.quiet++;
     for (const st of this.ifs.values()) this.stopIface(st, 'Interface down or detached');
     this.quiet--;
@@ -145,6 +148,15 @@ export class Ospf {
     this.setRoutes([]);
     this.chooseRouterId();
     this.refresh();
+  }
+
+  /**
+   * Withdraws every LSA this router originated, while its adjacencies still work, so
+   * neighbours stop using them at once instead of keeping them in their databases.
+   */
+  flushOwn() {
+    if (!this.routerId || !this.r.net) return;
+    for (const [key, l] of [...this.lsdb]) if (l.adv === this.routerId) this.flush(key);
   }
 
   hasNeighbours() {
@@ -719,7 +731,12 @@ export class Ospf {
     const r = this.r;
     const me = this.routerId;
     const routerLsa = (rid) => { const l = this.lsdb.get(`router:${rid}:${rid}`); return l && !l.maxAge ? l : null; };
-    const netLsa = (id) => [...this.lsdb.values()].find((l) => l.type === 'network' && l.id === id && !l.maxAge) || null;
+    // Normally one network LSA per DR address. If an old one survives (the DR changed its
+    // router ID), use the copy that lists the router looking for it.
+    const netLsa = (id, rid) => {
+      const all = [...this.lsdb.values()].filter((l) => l.type === 'network' && l.id === id && !l.maxAge);
+      return all.find((l) => l.attached.includes(rid)) || null;
+    };
     const root = me && routerLsa(me);
     if (!root) { this.setRoutes([]); return; }
     const hopKey = (h) => `${h.iface.name}|${h.nextHop}`;
@@ -734,29 +751,32 @@ export class Ospf {
     };
     while (cand.size) {
       let best = null;
-      for (const [k, v] of cand) if (!best || v.cost < best[1].cost) best = [k, v];
+      // On equal cost, networks go first so every equal-cost path into a router is known
+      // before the router itself is expanded (RFC 2328 16.1)
+      for (const [k, v] of cand) if (!best || v.cost < best[1].cost || (v.cost === best[1].cost && v.kind === 'N' && best[1].kind === 'R')) best = [k, v];
       const [key, v] = best;
       cand.delete(key);
       tree.set(key, v);
       if (v.kind === 'R') {
         for (const link of v.lsa.links || []) {
           if (link.kind !== 'transit') continue;
-          const n = netLsa(link.id);
-          if (!n || !n.attached.includes(v.id)) continue; // the network must list this router too
+          const n = netLsa(link.id, v.id);
+          if (!n) continue; // the network must list this router too
           let hops = v.hops;
           if (v.isRoot) {
             const st = [...this.ifs.values()].find((s) => s.ip === link.data);
             if (!st) continue;
             hops = [{ iface: st.iface, nextHop: null }];
           }
-          relax(`N:${link.id}`, { kind: 'N', id: link.id, lsa: n, cost: v.cost + link.cost, hops, direct: v.isRoot });
+          relax(`N:${link.id}`, { kind: 'N', id: link.id, lsa: n, cost: v.cost + link.cost, hops });
         }
       } else {
         for (const rid of v.lsa.attached) {
           const w = routerLsa(rid);
           const back = w && (w.links || []).find((l) => l.kind === 'transit' && l.id === v.id);
           if (!back) continue; // two-way check: the router must point back at this network
-          const hops = v.direct ? [{ iface: v.hops[0].iface, nextHop: back.data }] : v.hops;
+          // Across a network this router is attached to, the next hop is the neighbour itself
+          const hops = v.hops.map((h) => (h.nextHop ? h : { iface: h.iface, nextHop: back.data }));
           relax(`R:${rid}`, { kind: 'R', id: rid, lsa: w, cost: v.cost, hops });
         }
       }
@@ -773,7 +793,7 @@ export class Ospf {
     for (const v of tree.values()) {
       if (v.kind === 'N') {
         networks++;
-        if (!v.direct) offer(networkOf(v.id, v.lsa.mask), v.lsa.mask, v.cost, v.hops);
+        offer(networkOf(v.id, v.lsa.mask), v.lsa.mask, v.cost, v.hops); // directly attached hops have no next hop and are skipped below
         continue;
       }
       routers++;
@@ -830,6 +850,12 @@ export class Ospf {
     });
   }
 
+  /** The area this router's OSPF interfaces are in (single-area OSPF), for show commands. */
+  mainArea() {
+    for (const st of this.ifs.values()) return st.area;
+    return this.networks[0]?.area ?? 0;
+  }
+
   /** Router IDs this router has a usable router LSA from, with when it was originated. */
   sources() {
     const out = [];
@@ -855,9 +881,14 @@ export class Ospf {
     this.passive = new Set(c.passive || []);
     this.routerIdConfigured = c.routerId || null;
     this.logAdjacency = c.logAdjacency !== false;
-    this.referenceBw = c.referenceBw || OSPF_DEFAULTS.referenceBw;
+    this.referenceBw = validInt(c.referenceBw, 1, 4294967) ?? OSPF_DEFAULTS.referenceBw;
     if (c.enabled) { this.enabled = false; this.enable(c.processId || 1); }
   }
+}
+
+/** A whole number within [lo, hi], or undefined (for values read from saved files). */
+export function validInt(v, lo, hi) {
+  return Number.isInteger(v) && v >= lo && v <= hi ? v : undefined;
 }
 
 function freshExchange() {

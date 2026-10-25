@@ -876,7 +876,10 @@ Configuration register is 0x2102
       if (!l) { this.print('% Network not in table\n'); return; }
       const r = l.route;
       const isDefault = r.network === '0.0.0.0' && r.mask === '0.0.0.0';
-      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}${isDefault ? ', supernet' : ''}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip', O: `ospf ${d.ospf?.processId}` }[r.proto]}", distance ${r.ad}, metric ${r.metric}${isDefault ? ', candidate default path' : ''}\n  Routing Descriptor Blocks:\n  * ${r.nextHop || 'directly connected'}, via ${r.iface.name}\n`);
+      // every installed path for this prefix (equal-cost paths share the load)
+      const paths = routes.filter((x) => x.network === r.network && x.mask === r.mask && x.proto === r.proto);
+      const blocks = paths.map((x, k) => `  ${k === 0 ? '*' : ' '} ${x.nextHop || 'directly connected'}, via ${x.iface.name}`).join('\n');
+      this.print(`Routing entry for ${r.network}/${maskToPrefix(r.mask)}${isDefault ? ', supernet' : ''}\n  Known via "${{ C: 'connected', L: 'connected', S: 'static', R: 'rip', O: `ospf ${d.ospf?.processId}` }[r.proto]}", distance ${r.ad}, metric ${r.metric}${isDefault ? ', candidate default path' : ''}\n  Routing Descriptor Blocks:\n${blocks}\n`);
       return;
     }
     if (protoFilter) {
@@ -1114,11 +1117,11 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
     const age = (l) => String(Math.min(3600, Math.floor((this.d.now - (l.born ?? 0)) / 1000)));
     const seq = (l) => `0x${(l.seq >>> 0).toString(16).padStart(8, '0')}`;
     let out = `\n            OSPF Router with ID (${o.routerId}) (Process ID ${o.processId})\n`;
-    out += '\n                Router Link States (Area 0)\n\nLink ID         ADV Router      Age         Seq#       Link count\n';
+    out += `\n                Router Link States (Area ${o.mainArea()})\n\nLink ID         ADV Router      Age         Seq#       Link count\n`;
     for (const l of live.filter((x) => x.type === 'router')) out += `${l.id.padEnd(16)}${l.adv.padEnd(16)}${age(l).padEnd(12)}${seq(l)} ${(l.links || []).length}\n`;
     const nets = live.filter((x) => x.type === 'network');
     if (nets.length) {
-      out += '\n                Net Link States (Area 0)\n\nLink ID         ADV Router      Age         Seq#       Routers\n';
+      out += `\n                Net Link States (Area ${o.mainArea()})\n\nLink ID         ADV Router      Age         Seq#       Routers\n`;
       for (const l of nets) out += `${l.id.padEnd(16)}${l.adv.padEnd(16)}${age(l).padEnd(12)}${seq(l)} ${l.attached.length}\n`;
     }
     this.print(out);
