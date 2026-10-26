@@ -5,6 +5,7 @@ import { DhcpServer } from './dhcp.js';
 import { Rip } from './rip.js';
 import { Ospf, validInt } from './ospf.js';
 import { Acl } from './acl.js';
+import { Nat } from './nat.js';
 
 export class Router extends L3Device {
   constructor(name, { gig = 3 } = {}) {
@@ -27,6 +28,7 @@ export class Router extends L3Device {
     this.rip = new Rip(this);
     this.ospf = new Ospf(this);
     this.acl = new Acl(this);
+    this.nat = new Nat(this);
     this.udpHandlers.set(67, (iface, pkt) => this.onDhcp(iface, pkt));
     this.udpHandlers.set(520, (iface, pkt) => this.rip.receive(iface, pkt));
   }
@@ -59,7 +61,24 @@ export class Router extends L3Device {
   onOspf(iface, pkt) { this.ospf.receive(iface, pkt); }
 
   filterIn(iface, pkt) { return this.acl.check(iface, 'in', pkt); }
-  filterOut(iface, pkt) { return this.acl.check(iface, 'out', pkt); }
+  filterOut(iface, pkt, untranslated = pkt) {
+    if (this.acl.check(iface, 'out', pkt, untranslated)) return true;
+    this.nat.discardCreated(); // the flow never left, so its new translation is not kept
+    return false;
+  }
+  translateOut(inIface, outIface, pkt) { return this.nat.translateOut(inIface, outIface, pkt); }
+
+  /** Outside → inside NAT happens after the inbound ACL and before routing. */
+  handleIp(iface, pkt, frame) {
+    const match = this.nat.inboundMatch(iface, pkt);
+    if (match) {
+      if (!this.filterIn(iface, pkt)) return;
+      this.nat.translateIn(match, pkt);
+      this.forward(iface, pkt, { inChecked: true });
+      return;
+    }
+    super.handleIp(iface, pkt, frame);
+  }
 
   onDhcp(iface, pkt) {
     const m = pkt.payload.payload;
@@ -98,7 +117,7 @@ export class Router extends L3Device {
   resetConfig() {
     this.ifaces = this.ifaces.filter((i) => !i.parent);
     for (const i of this.ifaces) {
-      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null, ospf: undefined, bandwidth: undefined });
+      Object.assign(i, { ip: null, mask: null, description: '', helpers: [], aclIn: null, aclOut: null, ospf: undefined, bandwidth: undefined, nat: undefined });
       i.port.shutdown = true;
     }
     this.staticRoutes = [];
@@ -108,6 +127,7 @@ export class Router extends L3Device {
     this.rip = new Rip(this);
     this.ospf = new Ospf(this);
     this.acl = new Acl(this);
+    this.nat = new Nat(this);
     this.enableSecret = null;
     this.enablePassword = null;
     this.banner = '';
@@ -128,12 +148,14 @@ export class Router extends L3Device {
         rip: i.ripPassive ? { passive: true } : undefined,
         ospf: i.ospf && Object.keys(i.ospf).length ? { ...i.ospf } : undefined,
         bandwidth: i.bandwidth || undefined,
+        nat: i.nat || undefined,
       })),
       staticRoutes: this.staticRoutes,
       dhcp: this.dhcpServer.save(),
       rip: this.rip.save(),
       ospf: this.ospf.enabled ? this.ospf.save() : undefined,
       acls: this.acl.save(),
+      nat: this.nat.rules.length ? this.nat.save() : undefined,
       startupConfig: this.startupConfig,
       powered: this.powered,
     };
@@ -156,6 +178,7 @@ export class Router extends L3Device {
       i.ripPassive = !!ic.rip?.passive;
       i.ospf = ic.ospf ? { ...ic.ospf } : undefined;
       i.bandwidth = validInt(ic.bandwidth, 1, 10000000);
+      i.nat = ic.nat === 'inside' || ic.nat === 'outside' ? ic.nat : undefined;
       if (ic.sub) { i.shutdown = !!ic.shutdown; i.vlan = ic.vlan ?? null; i.nativeVlan = !!ic.nativeVlan; }
       else {
         i.port.shutdown = !!ic.shutdown;
@@ -168,6 +191,7 @@ export class Router extends L3Device {
     if (c.rip) this.rip.load(c.rip);
     if (c.ospf) this.ospf.load(c.ospf);
     if (c.acls) this.acl.load(c.acls);
+    this.nat.load(c.nat || {});
     this.startupConfig = c.startupConfig || null;
   }
 }

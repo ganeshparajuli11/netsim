@@ -2,6 +2,17 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.5.0 (2026-10-26)
+
+- NAT overload (PAT, RFC 3022). Mark interfaces with `ip nat inside` and `ip nat outside`, then `ip nat inside source list <acl> interface <if> overload` lets every inside host the access list permits share the outside interface's address. Without `overload` the rule is stored as overload, since an interface address can only be shared.
+- Flows are told apart by TCP/UDP source port or ICMP echo identifier. A host keeps its own port when it is free; otherwise it gets the next free one. Replies are only translated back when they come from the outside host and port that the flow went to. Anything else is not translated: traffic for the router's own address is handled by the router. NAT is not a firewall, so packets addressed straight to a routable inside address are still routed.
+- ICMP errors about a translated packet (TTL exceeded, unreachable) are translated back, so `tracert` works from behind NAT. ICMP errors now quote the TCP/UDP ports of the packet they are about, so errors about web or DNS traffic are mapped back too. If several rules use the same interface, the first one whose access list permits the source is used.
+- When an outbound ACL drops a packet after NAT, the unreachable message goes to the inside host and the new translation is not kept.
+- Translations expire after being idle (ICMP 60 s, UDP 5 min, TCP 24 h). New commands: `show ip nat translations [verbose]`, `show ip nat statistics`, `clear ip nat translation *`, `clear ip nat statistics`, and the matching `no` forms. The NAT lines appear in `show running-config`.
+- Inside to outside, NAT happens after routing and before the outbound ACL; outside to inside, after the inbound ACL and before routing. The packet inspector explains each translation, including when a port had to change and when a host is not permitted by the access list.
+- New lab: "Share one public address", where two PCs on a private LAN reach a web server through one provider address.
+- Saved files keep the NAT settings; files saved by older versions open with NAT off.
+
 ## 0.4.0 (2026-10-25)
 
 - OSPF, part 2: routes. Each router describes its links in a router LSA, and the DR of each segment describes the segment in a network LSA. Database descriptions now carry LSA headers; missing LSAs are fetched with link-state requests (state LOADING), and changes are flooded in link-state updates that are resent every 5 s until acknowledged.

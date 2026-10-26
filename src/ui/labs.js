@@ -72,6 +72,19 @@ function ospfRouteVia(net, router, network, nextHop) {
   return !!r?.routes?.().some((x) => x.proto === 'O' && x.network === network && x.nextHop === nextHop);
 }
 
+/** Pings Web from both PCs in a private copy and returns R1's NAT translations afterwards. */
+function natAfterPings(net) {
+  const copy = loadNetwork(serializeNetwork(net), new Network());
+  copy.settle(2000);
+  for (const pc of ['PC1', 'PC2']) {
+    const d = copy.findDevice(pc);
+    if (!d?.ping) return [];
+    d.ping('203.0.113.10', { count: 3, timeout: 1500, interval: 200 });
+    copy.settle(6000);
+  }
+  return copy.findDevice('R1')?.nat?.translations() || [];
+}
+
 export const LABS = [
   {
     id: 'first-lan',
@@ -388,6 +401,49 @@ export const LABS = [
       { text: 'An ACL is applied on R1', fn: (n) => find(n, 'R1').ifaces.some((i) => i.aclIn || i.aclOut) },
       { text: 'Staff can still reach Files', fn: (n) => canReach(n, 'Staff', '192.168.99.10') },
       { text: 'Guest cannot reach Files', fn: (n) => !canReach(n, 'Guest', '192.168.99.10') },
+    ],
+  },
+  {
+    id: 'nat-overload',
+    title: 'Share one public address',
+    level: 'Advanced',
+    summary: 'Use NAT overload so every PC on a private LAN reaches the internet through one address.',
+    build(net) {
+      dev(net, 'router', 'R1', -100, 0);
+      dev(net, 'switch', 'S1', -330, 0);
+      dev(net, 'pc', 'PC1', -500, -110);
+      dev(net, 'pc', 'PC2', -500, 110);
+      dev(net, 'router', 'ISP', 160, 0);
+      dev(net, 'server', 'Web', 410, 0);
+      wire(net, 'R1', 'GigabitEthernet0/0', 'S1', 'GigabitEthernet0/1');
+      wire(net, 'PC1', 'FastEthernet0', 'S1', 'FastEthernet0/1');
+      wire(net, 'PC2', 'FastEthernet0', 'S1', 'FastEthernet0/2');
+      wire(net, 'R1', 'GigabitEthernet0/1', 'ISP', 'GigabitEthernet0/1');
+      wire(net, 'Web', 'FastEthernet0', 'ISP', 'GigabitEthernet0/0');
+      const cfg = [['R1', 'GigabitEthernet0/0', '192.168.1.1', '255.255.255.0'], ['R1', 'GigabitEthernet0/1', '198.51.100.2', '255.255.255.252'],
+        ['ISP', 'GigabitEthernet0/1', '198.51.100.1', '255.255.255.252'], ['ISP', 'GigabitEthernet0/0', '203.0.113.1', '255.255.255.0']];
+      for (const [r, i, ip, m] of cfg) { const d = find(net, r); const f = d.getIface(i); f.ip = ip; f.mask = m; d.getPort(i).shutdown = false; net.notifyPort(d.getPort(i)); }
+      // R1 already sends everything else to the provider; the provider has no route to private addresses
+      find(net, 'R1').staticRoutes = [{ network: '0.0.0.0', mask: '0.0.0.0', nextHop: '198.51.100.1', iface: null, ad: 1 }];
+      find(net, 'PC1').setStatic({ ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'PC2').setStatic({ ip: '192.168.1.11', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Web').setStatic({ ip: '203.0.113.10', mask: '255.255.255.0', gateway: '203.0.113.1' });
+    },
+    guide: `<p>The office LAN uses private addresses (192.168.1.0/24). The provider gave R1 a single public address, 198.51.100.2, and does not route private addresses, so replies to the PCs never come back. <em>NAT overload</em> (also called PAT) lets every PC share R1's public address. R1 tells the conversations apart by their port numbers or ICMP identifiers.</p>
+      <ol>
+        <li>Ping Web (203.0.113.10) from PC1. It fails: Web answers 192.168.1.10, and the provider has no route to it.</li>
+        <li>On R1, list the addresses to translate: <code>access-list 1 permit 192.168.1.0 0.0.0.255</code></li>
+        <li>Mark the LAN side: <code>interface g0/0</code>, <code>ip nat inside</code>. Mark the provider side: <code>interface g0/1</code>, <code>ip nat outside</code>.</li>
+        <li>Share G0/1's address: <code>ip nat inside source list 1 interface g0/1 overload</code></li>
+        <li>Ping Web from both PCs, then run <code>show ip nat translations</code> on R1. Both inside local addresses map to the same inside global address.</li>
+      </ol>
+      <p class="note">In simulation mode, follow an echo request across R1 and compare the source address before and after it.</p>`,
+    checks: [
+      { text: 'R1 G0/0 is a NAT inside interface and G0/1 is a NAT outside interface', fn: (n) => find(n, 'R1').getIface('GigabitEthernet0/0').nat === 'inside' && find(n, 'R1').getIface('GigabitEthernet0/1').nat === 'outside' },
+      { text: 'R1 overloads G0/1 with an access list that exists', fn: (n) => { const r = find(n, 'R1'); return r.nat.rules.some((x) => x.iface === 'GigabitEthernet0/1' && r.acl.lists.has(x.acl)); } },
+      { text: 'PC1 can ping Web', fn: (n) => canReach(n, 'PC1', '203.0.113.10') },
+      { text: 'PC2 can ping Web', fn: (n) => canReach(n, 'PC2', '203.0.113.10') },
+      { text: 'Both PCs share the public address 198.51.100.2', fn: (n) => { const t = natAfterPings(n); return ['192.168.1.10', '192.168.1.11'].every((ip) => t.some((e) => e.insideLocal === ip && e.insideGlobal === '198.51.100.2')); } },
     ],
   },
   {
