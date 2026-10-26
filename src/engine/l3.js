@@ -287,7 +287,7 @@ export class L3Device extends Device {
 
   /** Hook for ACLs etc. Return false to drop. */
   filterIn(_iface, _pkt) { return true; }
-  filterOut(_iface, _pkt) { return true; }
+  filterOut(_iface, _pkt, _untranslated) { return true; }
   /** Hook for NAT after the routing decision. Return false to drop. */
   translateOut(_inIface, _outIface, _pkt) { return true; }
 
@@ -314,8 +314,10 @@ export class L3Device extends Device {
       && this.staticRoutes.some((s) => s.network === r.route.network && s.mask === r.route.mask && (s.ad ?? 1) < r.route.ad)) {
       this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because the preferred route with a lower distance is not available`);
     }
+    // ICMP errors about a dropped packet go to its real sender, so keep the untranslated header
+    const before = { ...pkt, payload: { ...pkt.payload } };
     if (!this.translateOut(inIface, r.iface, pkt)) return;
-    if (!this.filterOut(r.iface, pkt)) return;
+    if (!this.filterOut(r.iface, pkt, before)) return;
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);
       return;
@@ -370,7 +372,12 @@ export class L3Device extends Device {
       src: r.iface.ip, dst: orig.src, proto: 'ICMP',
       payload: {
         type, code,
-        orig: { src: orig.src, dst: orig.dst, proto: orig.proto, icmp: orig.proto === 'ICMP' ? { type: orig.payload.type, id: orig.payload.id, seq: orig.payload.seq } : null },
+        orig: {
+          src: orig.src, dst: orig.dst, proto: orig.proto,
+          icmp: orig.proto === 'ICMP' ? { type: orig.payload.type, id: orig.payload.id, seq: orig.payload.seq } : null,
+          // like a real ICMP error, quote the start of the transport header so NAT can map it back
+          ...(orig.proto === 'TCP' || orig.proto === 'UDP' ? { ports: { src: orig.payload?.srcPort, dst: orig.payload?.dstPort } } : {}),
+        },
       },
     });
   }

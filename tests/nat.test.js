@@ -74,6 +74,9 @@ test('two hosts using the same ICMP identifier get different global identifiers'
   const two = tr.find((e) => e.insideLocal === '192.168.1.11' && e.localPort === 77);
   assert.ok(one && two, 'both hosts have a translation for identifier 77');
   assert.notEqual(one.globalPort, two.globalPort);
+  // both hosts still get their replies
+  assert.match(pc2.run('ping 203.0.113.10', net), /Reply from 203\.0\.113\.10/);
+  assert.match(pc1.run('ping 203.0.113.10', net), /Reply from 203\.0\.113\.10/);
   assert.ok(net.events.some((e) => e.notes.some((n) => /ICMP identifier 77 is already taken on 198\.51\.100\.2/.test(n))));
 });
 
@@ -146,6 +149,8 @@ test('unsolicited traffic from outside reaches the router itself, not an inside 
   const { net, t } = office();
   t.run(PAT);
   pingTwice(net, 'PC1', '203.0.113.10');
+  // the outside host even uses the identifier of PC1's translation
+  net.findDevice('Web').icmpId = net.findDevice('R1').nat.translations()[0].globalPort;
   net.recording = true;
   assert.match(pingTwice(net, 'Web', '198.51.100.2'), /Reply from 198\.51\.100\.2/);
   assert.ok(!net.events.some((e) => e.from === 'R1' && e.to === 'S1'), 'nothing is passed to the inside LAN');
@@ -200,4 +205,60 @@ test('NAT commands are refused on switches', () => {
   LABS.find((l) => l.id === 'nat-overload').build(net);
   const s = ios(net.findDevice('S1'));
   assert.match(s.run('en\nconf t\nip nat inside source list 1 interface vlan1 overload'), /Invalid input/);
+});
+
+test('several rules on one interface: the first access list that permits the source is used', () => {
+  const { net, r1, t } = office();
+  t.run(`en
+    conf t
+    access-list 1 permit host 192.168.1.10
+    access-list 2 permit host 192.168.1.11
+    interface g0/0
+    ip nat inside
+    interface g0/1
+    ip nat outside
+    exit
+    ip nat inside source list 1 interface g0/1 overload
+    ip nat inside source list 2 interface g0/1 overload
+    end`);
+  assert.match(pingTwice(net, 'PC1', '203.0.113.10'), /Reply from/);
+  assert.match(pingTwice(net, 'PC2', '203.0.113.10'), /Reply from/);
+  assert.ok(r1.nat.translations().some((e) => e.insideLocal === '192.168.1.11'));
+});
+
+test('ICMP errors about translated TCP traffic reach the inside host', () => {
+  const { net, t } = office();
+  t.run(PAT);
+  pingTwice(net, 'PC1', '203.0.113.10'); // warm up ARP
+  net.recording = true;
+  const pc = net.findDevice('PC1');
+  pc.httpGet('http://192.0.2.99/', () => {}); // the provider has no route to 192.0.2.0/24
+  net.settle(5000);
+  const back = net.events.find((e) => e.from === 'R1' && e.to === 'S1' && e.frame.payload?.proto === 'ICMP' && e.frame.payload.payload.type === 3);
+  assert.ok(back, 'the unreachable message is passed to the LAN');
+  assert.equal(back.frame.payload.dst, '192.168.1.10');
+  assert.equal(back.frame.payload.payload.orig.src, '192.168.1.10');
+});
+
+test('an outbound ACL drop after NAT reports to the inside host and keeps no translation', () => {
+  const { net, r1, t } = office();
+  t.run(PAT);
+  t.run(`conf t
+    access-list 101 deny icmp any host 203.0.113.10
+    access-list 101 permit ip any any
+    interface g0/1
+    ip access-group 101 out
+    end`);
+  net.recording = true;
+  const o = pingTwice(net, 'PC1', '203.0.113.10');
+  assert.doesNotMatch(o, /Reply from 203/);
+  assert.match(o, /Reply from 192\.168\.1\.1: Destination host unreachable/);
+  assert.ok(!r1.nat.translations().some((e) => e.proto === 'icmp'), 'denied flows leave no translation');
+});
+
+test('"no ip nat" on a switch port is refused, not a crash', () => {
+  const net = new Network();
+  LABS.find((l) => l.id === 'nat-overload').build(net);
+  const s = ios(net.findDevice('S1'));
+  assert.match(s.run('en\nconf t\ninterface fa0/1\nno ip nat inside'), /Invalid input/);
 });

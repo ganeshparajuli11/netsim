@@ -311,7 +311,7 @@ C.add(['config-if', 'config-subif'], ['no ip helper-address', 'no ip helper-addr
 C.add(['config-if', 'config-subif'], ['ip access-group <n> in|out'], function ([n, dir]) { if (this.need('router')) this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = n; });
 C.add(['config-if', 'config-subif'], ['no ip access-group <n> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; });
 C.add(['config-if', 'config-subif'], ['ip nat inside|outside'], function ([role]) { if (this.need('router')) { this.ctx.iface.nat = role; this.changed(); } });
-C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
+C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.need('router') && this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
 C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) { this.eachPort((p) => { p.sw.mode = m; }); this.changed(); });
 C.add(IF_MODES, ['switchport mode dynamic <word>', 'switchport trunk encapsulation dot1q'], function () {});
 C.add(IF_MODES, ['switchport access vlan <n>'], function ([v]) {

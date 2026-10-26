@@ -61,7 +61,11 @@ export class Router extends L3Device {
   onOspf(iface, pkt) { this.ospf.receive(iface, pkt); }
 
   filterIn(iface, pkt) { return this.acl.check(iface, 'in', pkt); }
-  filterOut(iface, pkt) { return this.acl.check(iface, 'out', pkt); }
+  filterOut(iface, pkt, untranslated = pkt) {
+    if (this.acl.check(iface, 'out', pkt, untranslated)) return true;
+    this.nat.discardCreated(); // the flow never left, so its new translation is not kept
+    return false;
+  }
   translateOut(inIface, outIface, pkt) { return this.nat.translateOut(inIface, outIface, pkt); }
 
   /** Outside → inside NAT happens after the inbound ACL and before routing. */

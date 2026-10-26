@@ -76,18 +76,18 @@ export class Nat {
    */
   translateOut(inIface, outIface, pkt) {
     if (inIface.nat !== 'inside' || outIface.nat !== 'outside') return true;
-    const rule = this.rules.find((x) => x.iface.toLowerCase() === outIface.name.toLowerCase());
-    if (!rule) {
+    this.created = null;
+    const candidates = this.rules.filter((x) => x.iface.toLowerCase() === outIface.name.toLowerCase());
+    if (!candidates.length) {
       this.r.explain(`NAT: no "ip nat inside source" rule uses ${outIface.name}, so the source address ${pkt.src} is not translated`);
       return true;
     }
-    if (!this.r.acl.lists.has(rule.acl)) {
-      this.r.explain(`NAT: access list ${rule.acl} does not exist, so nothing is translated; the packet keeps its source ${pkt.src}`);
-      return true;
-    }
-    const verdict = this.r.acl.evaluate(rule.acl, pkt);
-    if (verdict.action !== 'permit') {
-      this.r.explain(`NAT: source ${pkt.src} is not permitted by access list ${rule.acl}, so it is forwarded without translation`);
+    // the first rule whose access list permits the source wins
+    const rule = candidates.find((x) => this.r.acl.lists.has(x.acl) && this.r.acl.evaluate(x.acl, pkt).action === 'permit');
+    if (!rule) {
+      const lists = candidates.map((x) => x.acl).join(', ');
+      const missing = candidates.filter((x) => !this.r.acl.lists.has(x.acl)).map((x) => x.acl);
+      this.r.explain(`NAT: source ${pkt.src} is not permitted by access list ${lists}${missing.length ? ` (access list ${missing.join(', ')} does not exist)` : ''}, so it is forwarded without translation`);
       return true;
     }
     if (!outIface.ip) {
@@ -100,9 +100,9 @@ export class Nat {
       return false;
     }
     this.expire();
-    const outsidePort = flow.proto === 'icmp' ? flow.sport : flow.dport;
+    // for ICMP the outside "port" is the identifier the outside host sees, which is the global one
     let e = this.table.find((x) => x.proto === flow.proto && x.insideLocal === pkt.src && x.localPort === flow.sport
-      && x.insideGlobal === outIface.ip && x.outside === pkt.dst && x.outsidePort === outsidePort);
+      && x.insideGlobal === outIface.ip && x.outside === pkt.dst && (flow.proto === 'icmp' || x.outsidePort === flow.dport));
     if (e) {
       this.hits++;
       this.r.explain(`NAT: existing translation ${ep(e.insideLocal, e.localPort)} → ${ep(e.insideGlobal, e.globalPort)} is reused`);
@@ -114,9 +114,10 @@ export class Nat {
       }
       e = {
         proto: flow.proto, insideLocal: pkt.src, localPort: flow.sport, insideGlobal: outIface.ip, globalPort,
-        outside: pkt.dst, outsidePort, created: this.now, last: this.now,
+        outside: pkt.dst, outsidePort: flow.proto === 'icmp' ? globalPort : flow.dport, created: this.now, last: this.now,
       };
       this.table.push(e);
+      this.created = e;
       this.misses++;
       const portNote = globalPort === flow.sport
         ? `keeps its ${flow.proto === 'icmp' ? 'ICMP identifier' : 'source port'} ${globalPort}`
@@ -135,9 +136,14 @@ export class Nat {
     if (iface.nat !== 'outside' || !this.table.length) return null;
     this.expire();
     // ICMP errors about a translated packet (for example TTL exceeded during a traceroute)
-    if (pkt.proto === 'ICMP' && (pkt.payload?.type === 3 || pkt.payload?.type === 11) && pkt.payload.orig?.icmp) {
+    if (pkt.proto === 'ICMP' && (pkt.payload?.type === 3 || pkt.payload?.type === 11) && pkt.payload.orig) {
       const o = pkt.payload.orig;
-      const e = this.table.find((x) => x.proto === 'icmp' && x.insideGlobal === pkt.dst && x.insideGlobal === o.src && x.globalPort === o.icmp.id);
+      const proto = String(o.proto || '').toLowerCase();
+      const port = proto === 'icmp' ? o.icmp?.id : o.ports?.src;
+      if (port === undefined || port === null) return null;
+      // the quoted packet must be one this translation actually sent
+      const e = this.table.find((x) => x.proto === proto && x.insideGlobal === pkt.dst && x.insideGlobal === o.src
+        && x.globalPort === port && x.outside === o.dst);
       return e ? { entry: e, error: true } : null;
     }
     if (pkt.proto === 'ICMP' && pkt.payload?.type !== 0) return null; // only echo replies come back through PAT
@@ -155,13 +161,22 @@ export class Nat {
     this.hits++;
     pkt.dst = e.insideLocal;
     if (error) {
-      pkt.payload.orig = { ...pkt.payload.orig, src: e.insideLocal, icmp: { ...pkt.payload.orig.icmp, id: e.localPort } };
+      const o = pkt.payload.orig;
+      pkt.payload.orig = e.proto === 'icmp'
+        ? { ...o, src: e.insideLocal, icmp: { ...o.icmp, id: e.localPort } }
+        : { ...o, src: e.insideLocal, ports: { ...o.ports, src: e.localPort } };
       this.r.explain(`NAT: this ICMP error is about translated flow ${ep(e.insideGlobal, e.globalPort)}; destination and the quoted packet are rewritten to the inside host ${e.insideLocal}`);
       return;
     }
     if (e.proto === 'icmp') pkt.payload.id = e.localPort;
     else pkt.payload.dstPort = e.localPort;
     this.r.explain(`NAT: ${ep(e.insideGlobal, e.globalPort)} belongs to the translation for ${ep(e.insideLocal, e.localPort)}; destination rewritten to the inside host`);
+  }
+
+  /** Forgets the translation the last packet created, when an outbound ACL drops that packet. */
+  discardCreated() {
+    if (this.created) this.table = this.table.filter((x) => x !== this.created);
+    this.created = null;
   }
 
   save() { return { rules: this.rules.map((x) => ({ ...x })) }; }

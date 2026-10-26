@@ -44,7 +44,8 @@ export class Acl {
     return { action: 'deny', rule: null, implicit: true };
   }
 
-  check(iface, dir, pkt) {
+  /** `errorPkt` is the packet the ICMP error is about (before NAT changed its source). */
+  check(iface, dir, pkt, errorPkt = pkt) {
     const num = dir === 'in' ? iface.aclIn : iface.aclOut;
     if (!num) return true;
     const res = this.evaluate(num, pkt);
@@ -53,7 +54,7 @@ export class Acl {
       return true;
     }
     this.r.explain(`ACL ${num} ${dir} on ${iface.name}: DENIED${res.implicit ? ' (implicit deny at end of list)' : ''}`);
-    this.r.sendIcmpError(pkt, 3, 13);
+    this.r.sendIcmpError(errorPkt, 3, 13);
     return false;
   }
 
