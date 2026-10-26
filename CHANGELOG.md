@@ -2,6 +2,16 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.5.0 (2026-10-26)
+
+- NAT overload (PAT, RFC 3022). Mark interfaces with `ip nat inside` and `ip nat outside`, then `ip nat inside source list <acl> interface <if> overload` lets every inside host the access list permits share the outside interface's address. Without `overload` the rule is stored as overload, since an interface address can only be shared.
+- Flows are told apart by TCP/UDP source port or ICMP echo identifier. A host keeps its own port when it is free; otherwise it gets the next free one. Replies are only let back in from the outside host and port that the flow went to; anything else is handled by the router itself.
+- ICMP errors about a translated packet (TTL exceeded, unreachable) are translated back, so `tracert` works from behind NAT.
+- Translations expire after being idle (ICMP 60 s, UDP 5 min, TCP 24 h). New commands: `show ip nat translations [verbose]`, `show ip nat statistics`, `clear ip nat translation *`, `clear ip nat statistics`, and the matching `no` forms. The NAT lines appear in `show running-config`.
+- Inside to outside, NAT happens after routing and before the outbound ACL; outside to inside, after the inbound ACL and before routing. The packet inspector explains each translation, including when a port had to change and when a host is not permitted by the access list.
+- New lab: "Share one public address", where two PCs on a private LAN reach a web server through one provider address.
+- Saved files keep the NAT settings; files saved by older versions open with NAT off.
+
 ## 0.4.0 (2026-10-25)
 
 - OSPF, part 2: routes. Each router describes its links in a router LSA, and the DR of each segment describes the segment in a network LSA. Database descriptions now carry LSA headers; missing LSAs are fetched with link-state requests (state LOADING), and changes are flooded in link-state updates that are resent every 5 s until acknowledged.

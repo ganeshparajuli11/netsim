@@ -83,6 +83,16 @@ const SOLUTIONS = {
       interface g0/1
       ip access-group 10 out
       end`),
+  'nat-overload': (n) => ios(n.findDevice('R1')).run(`en
+      conf t
+      access-list 1 permit 192.168.1.0 0.0.0.255
+      interface g0/0
+      ip nat inside
+      interface g0/1
+      ip nat outside
+      exit
+      ip nat inside source list 1 interface g0/1 overload
+      end`),
   stp: (n) => ios(n.findDevice('S1')).run('en\nconf t\nspanning-tree vlan 1 priority 4096\nend'),
 };
 

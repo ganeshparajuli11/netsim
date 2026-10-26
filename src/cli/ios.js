@@ -98,6 +98,13 @@ C.describe({
   'access-lists': 'List access lists',
   erase: 'Erase a filesystem',
   secret: 'Assign the privileged level secret',
+  nat: 'NAT configuration commands',
+  translations: 'Translation entries',
+  translation: 'Clear dynamic translation entries',
+  statistics: 'Translation statistics',
+  overload: 'Overload an address translation',
+  inside: 'Inside address translation',
+  outside: 'Outside address translation',
   password: 'Assign the privileged level password',
 });
 
@@ -147,6 +154,8 @@ C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function (
   this.print(pid !== undefined ? `Reset OSPF process ${pid}? [no]: yes\n` : 'Reset ALL OSPF processes? [no]: yes\n');
   this.d.ospf.restart();
 });
+C.add('priv', ['clear ip nat translation *'], function () { this.need('router') && this.d.nat.clear(); });
+C.add('priv', ['clear ip nat statistics'], function () { if (this.need('router')) { this.d.nat.hits = 0; this.d.nat.misses = 0; } });
 C.add('priv', ['clear access-list counters'], function () { if (this.d.acl) for (const l of this.d.acl.lists.values()) for (const r of l) r.hits = 0; });
 C.add(EXEC, ['terminal length <n>', 'terminal monitor', 'terminal no monitor'], function () {});
 C.add(EXEC, ['show version'], function () { this.showVersion(); });
@@ -177,6 +186,9 @@ C.add(EXEC, ['show access-lists', 'show ip access-lists', 'show access-lists <n>
 C.add(EXEC, ['show ip ospf neighbor', 'show ip ospf neighbor <if>'], function ([n]) { this.need('router') && this.showOspfNeighbors(n); });
 C.add(EXEC, ['show ip ospf database'], function () { this.need('router') && this.showOspfDatabase(); });
 C.add(EXEC, ['show ip ospf interface brief'], function () { this.need('router') && this.showOspfIfBrief(); });
+C.add(EXEC, ['show ip nat translations'], function () { this.need('router') && this.showNatTranslations(false); });
+C.add(EXEC, ['show ip nat translations verbose'], function () { this.need('router') && this.showNatTranslations(true); });
+C.add(EXEC, ['show ip nat statistics'], function () { this.need('router') && this.showNatStatistics(); });
 C.add(EXEC, ['show ip protocols'], function () { this.need('router') && this.showProtocols(); });
 
 // ---------- global config ----------
@@ -223,6 +235,20 @@ C.add('config', ['no router ospf <n>'], function ([pid]) {
 });
 C.add('config', ['no router rip'], function () { this.need('router') && this.d.rip.disable(); });
 C.add('config', ['access-list <n> <line>'], function ([n, rest]) { this.need('router') && this.addAcl(n, rest); });
+C.add('config', ['ip nat inside source list <n> interface <if> overload', 'ip nat inside source list <n> interface <if>'], function ([n, ifn]) {
+  if (!this.need('router')) return;
+  const i = this.d.getIface(ifn);
+  if (!i) { this.print('% Invalid interface\n'); return; }
+  this.d.nat.addRule({ acl: n, iface: i.name });
+  this.changed();
+});
+C.add('config', ['no ip nat inside source list <n> interface <if> overload', 'no ip nat inside source list <n> interface <if>', 'no ip nat inside source list <n>'], function ([n, ifn]) {
+  if (!this.need('router')) return;
+  const nat = this.d.nat;
+  if (ifn) nat.removeRule({ acl: n, iface: this.d.getIface(ifn)?.name || ifn });
+  else nat.rules = nat.rules.filter((r) => r.acl !== n);
+  this.changed();
+});
 C.add('config', ['no access-list <n>'], function ([n]) { this.need('router') && this.d.acl.remove(n); });
 C.add('config', ['line con <n>', 'line console <n>', 'line vty <n> <n>', 'line aux <n>'], function () { this.mode = 'config-line'; });
 C.add('config', ['spanning-tree vlan <n> priority <n>'], function ([, p]) {
@@ -284,6 +310,8 @@ C.add(['config-if', 'config-subif'], ['ip helper-address <ip>'], function ([h]) 
 C.add(['config-if', 'config-subif'], ['no ip helper-address', 'no ip helper-address <ip>'], function ([h]) { const i = this.ctx.iface; i.helpers = h ? (i.helpers || []).filter((x) => x !== h) : []; });
 C.add(['config-if', 'config-subif'], ['ip access-group <n> in|out'], function ([n, dir]) { if (this.need('router')) this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = n; });
 C.add(['config-if', 'config-subif'], ['no ip access-group <n> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; });
+C.add(['config-if', 'config-subif'], ['ip nat inside|outside'], function ([role]) { if (this.need('router')) { this.ctx.iface.nat = role; this.changed(); } });
+C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
 C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) { this.eachPort((p) => { p.sw.mode = m; }); this.changed(); });
 C.add(IF_MODES, ['switchport mode dynamic <word>', 'switchport trunk encapsulation dot1q'], function () {});
 C.add(IF_MODES, ['switchport access vlan <n>'], function ([v]) {
@@ -1051,6 +1079,34 @@ Interface        Role Sts Cost      Prio.Nbr Type
     this.print(out || '\n');
   }
 
+  showNatTranslations(verbose) {
+    const now = this.d.net ? this.d.net.time : 0;
+    const rows = this.d.nat.translations();
+    let out = 'Pro  Inside global         Inside local          Outside local         Outside global\n';
+    for (const e of rows) {
+      const g = `${e.insideGlobal}:${e.globalPort}`;
+      const l = `${e.insideLocal}:${e.localPort}`;
+      const o = `${e.outside}:${e.outsidePort}`;
+      out += `${e.proto.padEnd(5)}${g.padEnd(22)}${l.padEnd(22)}${o.padEnd(22)}${o}\n`;
+      if (verbose) out += `  create ${uptime(now - e.created)}, use ${uptime(now - e.last)}, flags: extended\n`;
+    }
+    this.print(out + '\n');
+  }
+
+  showNatStatistics() {
+    const d = this.d;
+    const rows = d.nat.translations();
+    const names = (role) => d.ifaces.filter((i) => i.nat === role).map((i) => i.name).join(', ');
+    let out = `Total active translations: ${rows.length} (0 static, ${rows.length} dynamic; ${rows.length} extended)\n`;
+    out += `Outside interfaces:\n  ${names('outside')}\nInside interfaces:\n  ${names('inside')}\n`;
+    out += `Hits: ${d.nat.hits}  Misses: ${d.nat.misses}\nDynamic mappings:\n-- Inside Source\n`;
+    d.nat.rules.forEach((r, k) => {
+      const refs = rows.filter((e) => e.insideGlobal === d.getIface(r.iface)?.ip).length;
+      out += `[Id: ${k + 1}] access-list ${r.acl} interface ${r.iface} refcount ${refs}\n`;
+    });
+    this.print(out);
+  }
+
   showOspfNeighbors(only) {
     const o = this.d.ospf;
     if (!o.enabled) { this.print('\n'); return; }
@@ -1165,6 +1221,7 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
         for (const h of i.helpers || []) L.push(` ip helper-address ${h}`);
         if (i.aclIn) L.push(` ip access-group ${i.aclIn} in`);
         if (i.aclOut) L.push(` ip access-group ${i.aclOut} out`);
+        if (i.nat) L.push(` ip nat ${i.nat}`);
         if (i.ospf?.hello !== undefined) L.push(` ip ospf hello-interval ${i.ospf.hello}`);
         if (i.ospf?.dead !== undefined) L.push(` ip ospf dead-interval ${i.ospf.dead}`);
         if (i.ospf?.priority !== undefined) L.push(` ip ospf priority ${i.ospf.priority}`);
@@ -1190,6 +1247,7 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
         for (const n of d.ospf.networks) L.push(` network ${n.ip} ${n.wildcard} area ${n.area}`);
         L.push('!');
       }
+      for (const r of d.nat.rules) L.push(`ip nat inside source list ${r.acl} interface ${r.iface} overload`);
       L.push('ip classless');
       for (const r of d.staticRoutes) L.push(`ip route ${r.network} ${r.mask} ${r.iface ? r.iface + (r.nextHop ? ` ${r.nextHop}` : '') : r.nextHop}${r.ad && r.ad !== 1 ? ` ${r.ad}` : ''}`);
       L.push('!', 'ip flow-export version 9', '!');

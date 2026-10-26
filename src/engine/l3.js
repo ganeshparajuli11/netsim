@@ -288,9 +288,11 @@ export class L3Device extends Device {
   /** Hook for ACLs etc. Return false to drop. */
   filterIn(_iface, _pkt) { return true; }
   filterOut(_iface, _pkt) { return true; }
+  /** Hook for NAT after the routing decision. Return false to drop. */
+  translateOut(_inIface, _outIface, _pkt) { return true; }
 
-  forward(inIface, pkt) {
-    if (!this.filterIn(inIface, pkt)) return;
+  forward(inIface, pkt, { inChecked = false } = {}) {
+    if (!inChecked && !this.filterIn(inIface, pkt)) return;
     pkt.ttl -= 1;
     if (pkt.ttl <= 0) {
       this.explain(`TTL expired; sending ICMP Time Exceeded to ${pkt.src}`);
@@ -303,7 +305,6 @@ export class L3Device extends Device {
       this.sendIcmpError(pkt, 3, 0);
       return;
     }
-    if (!this.filterOut(r.iface, pkt)) return;
     const via = r.nextHop !== pkt.dst ? ` via next hop ${r.nextHop}` : ' (directly connected)';
     this.explain(`routing table match ${r.route.network}/${maskToPrefix(r.route.mask)} [${r.route.proto}] → out ${r.iface.name}${via}; TTL now ${pkt.ttl}`);
     if (r.route.network === '0.0.0.0' && r.route.mask === '0.0.0.0') {
@@ -313,6 +314,8 @@ export class L3Device extends Device {
       && this.staticRoutes.some((s) => s.network === r.route.network && s.mask === r.route.mask && (s.ad ?? 1) < r.route.ad)) {
       this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because the preferred route with a lower distance is not available`);
     }
+    if (!this.translateOut(inIface, r.iface, pkt)) return;
+    if (!this.filterOut(r.iface, pkt)) return;
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);
       return;
