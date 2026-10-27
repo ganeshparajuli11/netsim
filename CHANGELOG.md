@@ -2,6 +2,16 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.6.0 (2026-10-27)
+
+- Static NAT (RFC 3022 basic NAT). `ip nat inside source static <inside local> <inside global>` maps one inside address to one public address in both directions and for every protocol, so hosts on the internet can start conversations with an inside server. Ports and ICMP identifiers are left alone. `no ip nat inside source static …` removes a mapping.
+- A static mapping wins over overload rules for the same host; other hosts keep sharing the interface address. ICMP errors about packets from a static address are translated back, so `tracert` works from the inside server.
+- When the public address is in the outside interface's subnet, the router answers ARP for it on that interface. Addresses the provider routes to the router work without ARP.
+- The router refuses mappings that reuse an inside or public address already mapped, use one of its own addresses, or map an address to itself.
+- `show ip nat translations` lists static entries (`---` for the outside addresses), `show ip nat statistics` counts them, `clear ip nat translation *` keeps them, and they appear in `show running-config`. The packet inspector explains each static translation and the ARP reply.
+- New lab: "Publish a server with static NAT", where a home PC opens a website on a private server through its public address.
+- Saved files keep static mappings; files saved by older versions open without any.
+
 ## 0.5.0 (2026-10-26)
 
 - NAT overload (PAT, RFC 3022). Mark interfaces with `ip nat inside` and `ip nat outside`, then `ip nat inside source list <acl> interface <if> overload` lets every inside host the access list permits share the outside interface's address. Without `overload` the rule is stored as overload, since an interface address can only be shared.

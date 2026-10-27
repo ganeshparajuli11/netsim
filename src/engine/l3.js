@@ -247,6 +247,14 @@ export class L3Device extends Device {
         });
         return;
       }
+      if (this.answersArpFor(iface, a.targetIp)) {
+        if (a.senderIp !== '0.0.0.0') this.learnArp(a.senderIp, a.senderMac, iface);
+        this.explain(`ARP request is for ${a.targetIp}, which NAT statically maps to an inside host; replying with ${iface.mac}`);
+        this.sendFrame(iface, a.senderMac, 'ARP', {
+          op: 2, senderMac: iface.mac, senderIp: a.targetIp, targetMac: a.senderMac, targetIp: a.senderIp,
+        });
+        return;
+      }
       if (this.proxyArp && this.forwarding && iface.ip) {
         const r = this.lookup(a.targetIp);
         if (r && r.iface !== iface && r.route.proto !== 'L') {
@@ -284,6 +292,9 @@ export class L3Device extends Device {
     }
     this.forward(iface, pkt);
   }
+
+  /** Hook for addresses this device answers ARP for besides its own (static NAT). */
+  answersArpFor(_iface, _ip) { return false; }
 
   /** Hook for ACLs etc. Return false to drop. */
   filterIn(_iface, _pkt) { return true; }

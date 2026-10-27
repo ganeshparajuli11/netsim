@@ -2,9 +2,15 @@
 // "NAPT"). Inside hosts that match an access list share the address of one outside interface;
 // each flow is told apart by its TCP/UDP source port or its ICMP query identifier.
 //
+// Static NAT (RFC 3022 "basic NAT", one to one) maps one inside local address to one inside global
+// address for every protocol, in both directions, so outside hosts can start conversations with an
+// inside server. A static mapping wins over the overload rules for the same inside host.
+//
 // Interfaces are marked `iface.nat = 'inside' | 'outside'`. The router calls:
 //   translateOut(inIface, outIface, pkt)  after routing, for inside → outside traffic
 //   inboundMatch(iface, pkt) / translateIn(entry, pkt) before routing, for outside → inside traffic
+
+import { inSubnet, isValidIp } from './util.js';
 
 // Idle timeouts in milliseconds (the usual defaults on routers)
 export const NAT_TIMEOUTS = { icmp: 60 * 1000, udp: 5 * 60 * 1000, tcp: 24 * 60 * 60 * 1000 };
@@ -31,6 +37,7 @@ export class Nat {
   constructor(router) {
     this.r = router;
     this.rules = [];         // [{ acl, iface, overload }]: "ip nat inside source list <acl> interface <iface> overload"
+    this.statics = [];       // [{ local, global }]: "ip nat inside source static <local> <global>"
     this.table = [];         // [{ proto, insideLocal, localPort, insideGlobal, globalPort, outside, outsidePort, created, last }]
     this.hits = 0;
     this.misses = 0;
@@ -39,7 +46,28 @@ export class Nat {
   get now() { return this.r.net ? this.r.net.time : 0; }
 
   /** True when there is anything to translate with. */
-  active() { return this.rules.length > 0 || this.table.length > 0; }
+  active() { return this.rules.length > 0 || this.statics.length > 0 || this.table.length > 0; }
+
+  /**
+   * Adds a static mapping. Returns null on success, or the existing mapping that already uses
+   * the inside local or the inside global address.
+   */
+  addStatic(local, global) {
+    const same = (s) => s.local === local && s.global === global;
+    const clash = this.statics.find((s) => (s.local === local || s.global === global) && !same(s));
+    if (clash) return clash;
+    if (!this.statics.some(same)) this.statics.push({ local, global });
+    return null;
+  }
+
+  /** Removes a static mapping; returns false when there was no such mapping. */
+  removeStatic(local, global) {
+    const n = this.statics.length;
+    this.statics = this.statics.filter((s) => !(s.local === local && s.global === global));
+    return this.statics.length !== n;
+  }
+
+  staticFor(field, ip) { return this.statics.find((s) => s[field] === ip) || null; }
 
   addRule(rule) {
     this.removeRule(rule);
@@ -77,6 +105,13 @@ export class Nat {
   translateOut(inIface, outIface, pkt) {
     if (inIface.nat !== 'inside' || outIface.nat !== 'outside') return true;
     this.created = null;
+    const st = this.staticFor('local', pkt.src);
+    if (st) {
+      this.hits++;
+      this.r.explain(`NAT: static mapping ${st.local} → ${st.global}; source address rewritten, ${pkt.proto === 'ICMP' ? 'ICMP identifier' : 'ports'} unchanged`);
+      pkt.src = st.global;
+      return true;
+    }
     const candidates = this.rules.filter((x) => x.iface.toLowerCase() === outIface.name.toLowerCase());
     if (!candidates.length) {
       this.r.explain(`NAT: no "ip nat inside source" rule uses ${outIface.name}, so the source address ${pkt.src} is not translated`);
@@ -133,7 +168,26 @@ export class Nat {
 
   /** Outside → inside: finds the translation an arriving packet belongs to, or null. */
   inboundMatch(iface, pkt) {
-    if (iface.nat !== 'outside' || !this.table.length) return null;
+    if (iface.nat !== 'outside') return null;
+    const dyn = this.table.length ? this.dynamicMatch(pkt) : null;
+    if (dyn) return dyn;
+    const st = this.staticFor('global', pkt.dst);
+    if (!st) return null;
+    if (this.r.ownsIp(st.global)) {
+      this.r.explain(`NAT: ${st.global} is also an address of this router, so the static mapping to ${st.local} is not used`);
+      return null;
+    }
+    const error = pkt.proto === 'ICMP' && (pkt.payload?.type === 3 || pkt.payload?.type === 11) && pkt.payload.orig?.src === st.global;
+    return { static: st, error };
+  }
+
+  /** True when this router should answer ARP for `ip` on `iface` because it is a static global address. */
+  ownsGlobal(iface, ip) {
+    return iface.nat === 'outside' && !!this.staticFor('global', ip) && !this.r.ownsIp(ip)
+      && !!iface.ip && !!iface.mask && inSubnet(ip, iface.ip, iface.mask);
+  }
+
+  dynamicMatch(pkt) {
     this.expire();
     // ICMP errors about a translated packet (for example TTL exceeded during a traceroute)
     if (pkt.proto === 'ICMP' && (pkt.payload?.type === 3 || pkt.payload?.type === 11) && pkt.payload.orig) {
@@ -156,7 +210,18 @@ export class Nat {
   }
 
   /** Rewrites the destination of an arriving packet back to the inside host. */
-  translateIn({ entry: e, error }, pkt) {
+  translateIn({ entry: e, static: st, error }, pkt) {
+    if (st) {
+      this.hits++;
+      pkt.dst = st.local;
+      if (error) {
+        pkt.payload.orig = { ...pkt.payload.orig, src: st.local };
+        this.r.explain(`NAT: this ICMP error is about a packet from ${st.global}; static mapping rewrites it to the inside host ${st.local}`);
+      } else {
+        this.r.explain(`NAT: ${st.global} is statically mapped to ${st.local}; destination rewritten to the inside host`);
+      }
+      return;
+    }
     e.last = this.now;
     this.hits++;
     pkt.dst = e.insideLocal;
@@ -179,11 +244,17 @@ export class Nat {
     this.created = null;
   }
 
-  save() { return { rules: this.rules.map((x) => ({ ...x })) }; }
+  save() {
+    const c = { rules: this.rules.map((x) => ({ ...x })) };
+    if (this.statics.length) c.statics = this.statics.map((x) => ({ ...x }));
+    return c;
+  }
 
   load(c = {}) {
     this.rules = (c.rules || []).filter((x) => x && Number.isInteger(Number(x.acl)) && typeof x.iface === 'string')
       .map((x) => ({ acl: Number(x.acl), iface: x.iface, overload: true }));
+    this.statics = [];
+    for (const x of c.statics || []) if (x && isValidIp(x.local) && isValidIp(x.global)) this.addStatic(x.local, x.global);
     this.table = [];
   }
 }

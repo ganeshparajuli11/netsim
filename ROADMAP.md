@@ -6,7 +6,6 @@ Each item should fit in one focused pull request. Split anything bigger before s
 
 ## Backlog
 
-- [ ] Static NAT: `ip nat inside source static <inside> <outside>`
 - [ ] Named ACLs: `ip access-list standard|extended NAME` with numbered sequence lines and `no <seq>`
 - [ ] Switch port security: `switchport port-security`, `maximum`, `mac-address sticky`, `violation shutdown|restrict|protect`, err-disabled state with a red light, `show port-security`
 - [ ] Interface counters: packets in/out and drops per interface, shown in `show interfaces` and the Ports tab
@@ -41,3 +40,4 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [x] OSPF single area, part 1: `router ospf <id>`, `network <ip> <wildcard> area 0`, neighbour discovery with hellos, `show ip ospf neighbor`
 - [x] OSPF single area, part 2: shortest-path routes (cost = 100 Mbps / bandwidth), `show ip route` code `O`, `show ip protocols` for OSPF, lab "OSPF in one area"
 - [x] NAT overload (PAT): `ip nat inside/outside`, `ip nat inside source list <acl> interface <if> overload`, `show ip nat translations`, lab "Share one public address"
+- [x] Static NAT: `ip nat inside source static <inside> <outside>`, lab "Publish a server with static NAT"

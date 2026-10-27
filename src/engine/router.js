@@ -67,6 +67,7 @@ export class Router extends L3Device {
     return false;
   }
   translateOut(inIface, outIface, pkt) { return this.nat.translateOut(inIface, outIface, pkt); }
+  answersArpFor(iface, ip) { return this.nat.ownsGlobal(iface, ip); }
 
   /** Outside → inside NAT happens after the inbound ACL and before routing. */
   handleIp(iface, pkt, frame) {
@@ -155,7 +156,7 @@ export class Router extends L3Device {
       rip: this.rip.save(),
       ospf: this.ospf.enabled ? this.ospf.save() : undefined,
       acls: this.acl.save(),
-      nat: this.nat.rules.length ? this.nat.save() : undefined,
+      nat: this.nat.rules.length || this.nat.statics.length ? this.nat.save() : undefined,
       startupConfig: this.startupConfig,
       powered: this.powered,
     };

@@ -105,6 +105,7 @@ C.describe({
   overload: 'Overload an address translation',
   inside: 'Inside address translation',
   outside: 'Outside address translation',
+  static: 'Static route or static translation entry',
   password: 'Assign the privileged level password',
 });
 
@@ -247,6 +248,19 @@ C.add('config', ['no ip nat inside source list <n> interface <if> overload', 'no
   const nat = this.d.nat;
   if (ifn) nat.removeRule({ acl: n, iface: this.d.getIface(ifn)?.name || ifn });
   else nat.rules = nat.rules.filter((r) => r.acl !== n);
+  this.changed();
+});
+C.add('config', ['ip nat inside source static <ip> <ip>'], function ([local, global]) {
+  if (!this.need('router')) return;
+  if (local === global) { this.print('% Inside local and inside global addresses must be different\n'); return; }
+  if (this.d.ownsIp(global)) { this.print(`% ${global} is an address of this router; choose another inside global address\n`); return; }
+  const clash = this.d.nat.addStatic(local, global);
+  if (clash) { this.print(`% Static mapping ${clash.local} -> ${clash.global} already uses one of these addresses\n`); return; }
+  this.changed();
+});
+C.add('config', ['no ip nat inside source static <ip> <ip>'], function ([local, global]) {
+  if (!this.need('router')) return;
+  if (!this.d.nat.removeStatic(local, global)) { this.print(`% Translation not found\n`); return; }
   this.changed();
 });
 C.add('config', ['no access-list <n>'], function ([n]) { this.need('router') && this.d.acl.remove(n); });
@@ -1083,6 +1097,10 @@ Interface        Role Sts Cost      Prio.Nbr Type
     const now = this.d.net ? this.d.net.time : 0;
     const rows = this.d.nat.translations();
     let out = 'Pro  Inside global         Inside local          Outside local         Outside global\n';
+    for (const st of this.d.nat.statics) {
+      out += `${'---'.padEnd(5)}${st.global.padEnd(22)}${st.local.padEnd(22)}${'---'.padEnd(22)}---\n`;
+      if (verbose) out += '  flags: static\n';
+    }
     for (const e of rows) {
       const g = `${e.insideGlobal}:${e.globalPort}`;
       const l = `${e.insideLocal}:${e.localPort}`;
@@ -1097,7 +1115,8 @@ Interface        Role Sts Cost      Prio.Nbr Type
     const d = this.d;
     const rows = d.nat.translations();
     const names = (role) => d.ifaces.filter((i) => i.nat === role).map((i) => i.name).join(', ');
-    let out = `Total active translations: ${rows.length} (0 static, ${rows.length} dynamic; ${rows.length} extended)\n`;
+    const statics = d.nat.statics.length;
+    let out = `Total active translations: ${rows.length + statics} (${statics} static, ${rows.length} dynamic; ${rows.length} extended)\n`;
     out += `Outside interfaces:\n  ${names('outside')}\nInside interfaces:\n  ${names('inside')}\n`;
     out += `Hits: ${d.nat.hits}  Misses: ${d.nat.misses}\nDynamic mappings:\n-- Inside Source\n`;
     d.nat.rules.forEach((r, k) => {
@@ -1248,6 +1267,7 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
         L.push('!');
       }
       for (const r of d.nat.rules) L.push(`ip nat inside source list ${r.acl} interface ${r.iface} overload`);
+      for (const st of d.nat.statics) L.push(`ip nat inside source static ${st.local} ${st.global}`);
       L.push('ip classless');
       for (const r of d.staticRoutes) L.push(`ip route ${r.network} ${r.mask} ${r.iface ? r.iface + (r.nextHop ? ` ${r.nextHop}` : '') : r.nextHop}${r.ad && r.ad !== 1 ? ` ${r.ad}` : ''}`);
       L.push('!', 'ip flow-export version 9', '!');
