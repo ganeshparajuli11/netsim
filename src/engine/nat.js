@@ -110,6 +110,10 @@ export class Nat {
       this.hits++;
       this.r.explain(`NAT: static mapping ${st.local} → ${st.global}; source address rewritten, ${pkt.proto === 'ICMP' ? 'ICMP identifier' : 'ports'} unchanged`);
       pkt.src = st.global;
+      // an ICMP error about a packet that came in through this mapping quotes the public destination
+      if (pkt.proto === 'ICMP' && (pkt.payload?.type === 3 || pkt.payload?.type === 11) && pkt.payload.orig?.dst === st.local) {
+        pkt.payload.orig = { ...pkt.payload.orig, dst: st.global };
+      }
       return true;
     }
     const candidates = this.rules.filter((x) => x.iface.toLowerCase() === outIface.name.toLowerCase());

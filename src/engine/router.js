@@ -74,8 +74,9 @@ export class Router extends L3Device {
     const match = this.nat.inboundMatch(iface, pkt);
     if (match) {
       if (!this.filterIn(iface, pkt)) return;
+      const original = { ...pkt, payload: { ...pkt.payload } };
       this.nat.translateIn(match, pkt);
-      this.forward(iface, pkt, { inChecked: true });
+      this.forward(iface, pkt, { inChecked: true, original });
       return;
     }
     super.handleIp(iface, pkt, frame);

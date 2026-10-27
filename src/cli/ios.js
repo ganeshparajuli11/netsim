@@ -253,7 +253,8 @@ C.add('config', ['no ip nat inside source list <n> interface <if> overload', 'no
 C.add('config', ['ip nat inside source static <ip> <ip>'], function ([local, global]) {
   if (!this.need('router')) return;
   if (local === global) { this.print('% Inside local and inside global addresses must be different\n'); return; }
-  if (this.d.ownsIp(global)) { this.print(`% ${global} is an address of this router; choose another inside global address\n`); return; }
+  const own = this.d.ifaces.find((i) => i.ip === local || i.ip === global);
+  if (own) { this.print(`% ${own.ip} is an address of this router (${own.name}); static NAT maps addresses of other hosts\n`); return; }
   const clash = this.d.nat.addStatic(local, global);
   if (clash) { this.print(`% Static mapping ${clash.local} -> ${clash.global} already uses one of these addresses\n`); return; }
   this.changed();

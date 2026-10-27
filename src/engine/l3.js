@@ -302,18 +302,22 @@ export class L3Device extends Device {
   /** Hook for NAT after the routing decision. Return false to drop. */
   translateOut(_inIface, _outIface, _pkt) { return true; }
 
-  forward(inIface, pkt, { inChecked = false } = {}) {
+  /**
+   * Routes a packet. `original` is the header as the sender built it, when NAT has already
+   * rewritten the destination; ICMP errors quote it so the sender can match them.
+   */
+  forward(inIface, pkt, { inChecked = false, original = null } = {}) {
     if (!inChecked && !this.filterIn(inIface, pkt)) return;
     pkt.ttl -= 1;
     if (pkt.ttl <= 0) {
       this.explain(`TTL expired; sending ICMP Time Exceeded to ${pkt.src}`);
-      this.sendIcmpError(pkt, 11, 0);
+      this.sendIcmpError(original || pkt, 11, 0);
       return;
     }
     const r = this.lookup(pkt.dst);
     if (!r) {
       this.explain(`no route to ${pkt.dst}; sending ICMP Destination Unreachable`);
-      this.sendIcmpError(pkt, 3, 0);
+      this.sendIcmpError(original || pkt, 3, 0);
       return;
     }
     const via = r.nextHop !== pkt.dst ? ` via next hop ${r.nextHop}` : ' (directly connected)';
@@ -326,7 +330,7 @@ export class L3Device extends Device {
       this.explain(`this is a floating static route (distance ${r.route.ad}); it is in use because the preferred route with a lower distance is not available`);
     }
     // ICMP errors about a dropped packet go to its real sender, so keep the untranslated header
-    const before = { ...pkt, payload: { ...pkt.payload } };
+    const before = original || { ...pkt, payload: { ...pkt.payload } };
     if (!this.translateOut(inIface, r.iface, pkt)) return;
     if (!this.filterOut(r.iface, pkt, before)) return;
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {

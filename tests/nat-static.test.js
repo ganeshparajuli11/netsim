@@ -170,3 +170,36 @@ test('static mappings are saved, and files without them still load', () => {
   assert.deepEqual(loaded.findDevice('R1').nat.statics, []);
   assert.equal(loaded.findDevice('R1').nat.rules.length, 1);
 });
+
+test('mappings that use any router address are refused, even on an interface that is down', () => {
+  const { r1, t } = office();
+  t.run('en\nconf t\ninterface g0/2\nip address 10.9.9.1 255.255.255.0\nexit'); // still shut down
+  assert.match(t.run('ip nat inside source static 10.9.9.1 198.51.100.5'), /10\.9\.9\.1 is an address of this router \(GigabitEthernet0\/2\)/);
+  assert.match(t.run('ip nat inside source static 192.168.1.30 10.9.9.1'), /10\.9\.9\.1 is an address of this router/);
+  assert.match(t.run('ip nat inside source static 192.168.1.1 198.51.100.5'), /192\.168\.1\.1 is an address of this router/);
+  assert.deepEqual(r1.nat.statics, []);
+});
+
+test('ICMP errors quote the public address the outside sender used', () => {
+  const { net, t } = office();
+  t.run(STATIC);
+  pingTwice(net, 'Home', '198.51.100.3');
+  net.recording = true;
+  const out = cmd(net.findDevice('Home')).run('tracert 198.51.100.3', net);
+  assert.match(out, /198\.51\.100\.2/, 'R1 shows up as a hop');
+  const errs = net.events.filter((e) => e.from === 'R1' && e.to === 'ISP' && e.frame.payload?.payload?.type === 11);
+  assert.ok(errs.length > 0, 'R1 sends time exceeded when the TTL runs out after translation');
+  assert.ok(errs.every((e) => e.frame.payload.payload.orig.dst === '198.51.100.3'));
+});
+
+test('an ICMP error from a mapped inside host has its quoted destination translated too', () => {
+  const { r1, t } = office();
+  t.run(STATIC);
+  const pkt = {
+    src: '192.168.1.20', dst: '203.0.113.10', proto: 'ICMP', ttl: 64,
+    payload: { type: 3, code: 3, orig: { src: '203.0.113.10', dst: '192.168.1.20', proto: 'UDP', ports: { src: 5000, dst: 69 } } },
+  };
+  assert.equal(r1.nat.translateOut(r1.getIface('GigabitEthernet0/0'), r1.getIface('GigabitEthernet0/1'), pkt), true);
+  assert.equal(pkt.src, '198.51.100.3');
+  assert.equal(pkt.payload.orig.dst, '198.51.100.3');
+});
