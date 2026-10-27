@@ -85,6 +85,21 @@ function natAfterPings(net) {
   return copy.findDevice('R1')?.nat?.translations() || [];
 }
 
+/** Opens a web page in a private copy of the network; true when the server answers 200. */
+function canBrowse(net, from, url) {
+  const copy = loadNetwork(serializeNetwork(net), new Network());
+  copy.settle(2000);
+  const host = copy.findDevice(from);
+  if (!host?.httpGet) return false;
+  let ok = false;
+  // a few tries: each router on the path drops the first packet while it resolves ARP
+  for (let i = 0; i < 3 && !ok; i++) {
+    host.httpGet(url, (r) => { if (r.status === 200) ok = true; });
+    copy.settle(5000);
+  }
+  return ok;
+}
+
 export const LABS = [
   {
     id: 'first-lan',
@@ -444,6 +459,49 @@ export const LABS = [
       { text: 'PC1 can ping Web', fn: (n) => canReach(n, 'PC1', '203.0.113.10') },
       { text: 'PC2 can ping Web', fn: (n) => canReach(n, 'PC2', '203.0.113.10') },
       { text: 'Both PCs share the public address 198.51.100.2', fn: (n) => { const t = natAfterPings(n); return ['192.168.1.10', '192.168.1.11'].every((ip) => t.some((e) => e.insideLocal === ip && e.insideGlobal === '198.51.100.2')); } },
+    ],
+  },
+  {
+    id: 'nat-static',
+    title: 'Publish a server with static NAT',
+    level: 'Advanced',
+    summary: 'Give an inside web server its own public address so people on the internet can reach it.',
+    build(net) {
+      dev(net, 'router', 'R1', -100, 0);
+      dev(net, 'switch', 'S1', -330, 0);
+      dev(net, 'pc', 'PC1', -500, -110);
+      dev(net, 'server', 'Srv', -500, 110);
+      dev(net, 'router', 'ISP', 160, 0);
+      dev(net, 'pc', 'Home', 410, 0);
+      wire(net, 'R1', 'GigabitEthernet0/0', 'S1', 'GigabitEthernet0/1');
+      wire(net, 'PC1', 'FastEthernet0', 'S1', 'FastEthernet0/1');
+      wire(net, 'Srv', 'FastEthernet0', 'S1', 'FastEthernet0/2');
+      wire(net, 'R1', 'GigabitEthernet0/1', 'ISP', 'GigabitEthernet0/1');
+      wire(net, 'Home', 'FastEthernet0', 'ISP', 'GigabitEthernet0/0');
+      const cfg = [['R1', 'GigabitEthernet0/0', '192.168.1.1', '255.255.255.0'], ['R1', 'GigabitEthernet0/1', '198.51.100.2', '255.255.255.248'],
+        ['ISP', 'GigabitEthernet0/1', '198.51.100.1', '255.255.255.248'], ['ISP', 'GigabitEthernet0/0', '203.0.113.1', '255.255.255.0']];
+      for (const [r, i, ip, m] of cfg) { const d = find(net, r); const f = d.getIface(i); f.ip = ip; f.mask = m; d.getPort(i).shutdown = false; net.notifyPort(d.getPort(i)); }
+      // the provider gave R1 the block 198.51.100.0/29 and has no route to private addresses
+      find(net, 'R1').staticRoutes = [{ network: '0.0.0.0', mask: '0.0.0.0', nextHop: '198.51.100.1', iface: null, ad: 1 }];
+      find(net, 'PC1').setStatic({ ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Srv').setStatic({ ip: '192.168.1.20', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Home').setStatic({ ip: '203.0.113.10', mask: '255.255.255.0', gateway: '203.0.113.1' });
+    },
+    guide: `<p>Srv runs the office website on a private address, 192.168.1.20. Nobody on the internet can send packets to a private address. The provider gave R1 a small public block, 198.51.100.0/29, so you can give Srv one of those addresses with <em>static NAT</em>.</p>
+      <p>Overload only works for conversations that start inside. A static mapping works in both directions and for every protocol, so Home can start a conversation with Srv.</p>
+      <ol>
+        <li>From Home, ping 198.51.100.3. Nothing answers yet.</li>
+        <li>On R1, mark the LAN side: <code>interface g0/0</code>, <code>ip nat inside</code>. Mark the provider side: <code>interface g0/1</code>, <code>ip nat outside</code>.</li>
+        <li>Map Srv to a public address: <code>ip nat inside source static 192.168.1.20 198.51.100.3</code></li>
+        <li>Ping 198.51.100.3 from Home again, and open <code>http://198.51.100.3</code> in Home's web browser.</li>
+        <li>Run <code>show ip nat translations</code> on R1. A static entry has no outside addresses because it is used by every conversation.</li>
+      </ol>
+      <p class="note">R1 answers ARP for 198.51.100.3 on G0/1, even though no interface has that address. Watch the ARP exchange in simulation mode.</p>`,
+    checks: [
+      { text: 'R1 G0/0 is a NAT inside interface and G0/1 is a NAT outside interface', fn: (n) => find(n, 'R1').getIface('GigabitEthernet0/0').nat === 'inside' && find(n, 'R1').getIface('GigabitEthernet0/1').nat === 'outside' },
+      { text: 'R1 maps 192.168.1.20 to 198.51.100.3', fn: (n) => find(n, 'R1').nat.statics.some((x) => x.local === '192.168.1.20' && x.global === '198.51.100.3') },
+      { text: 'Home can ping 198.51.100.3', fn: (n) => canReach(n, 'Home', '198.51.100.3') },
+      { text: 'Home can open the website at http://198.51.100.3', fn: (n) => canBrowse(n, 'Home', 'http://198.51.100.3/') },
     ],
   },
   {
