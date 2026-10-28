@@ -93,6 +93,12 @@ const SOLUTIONS = {
       exit
       ip nat inside source list 1 interface g0/1 overload
       end`),
+  'acl-named': (n) => ios(n.findDevice('R1')).run(`en
+      conf t
+      ip access-list extended FILES-OUT
+      5 deny tcp host 192.168.1.50 host 192.168.99.10 eq www
+      no 10
+      end`),
   'nat-static': (n) => ios(n.findDevice('R1')).run(`en
       conf t
       interface g0/0

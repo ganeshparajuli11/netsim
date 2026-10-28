@@ -7,10 +7,11 @@ import {
   isValidIp, isValidMask, maskToPrefix, networkOf, inSubnet, ipToInt, formatMac, parseRangeList,
   compressRange, wildcardToMask,
 } from '../engine/util.js';
-import { addrToString } from '../engine/acl.js';
+import { addrToString, aclKey, numberedType, ruleText } from '../engine/acl.js';
 import { bandwidthKbps } from '../engine/ospf.js';
 
-const CONFIG_MODES = ['config', 'config-if', 'config-subif', 'config-if-range', 'config-vlan', 'dhcp-config', 'config-router', 'config-line'];
+const CONFIG_MODES = ['config', 'config-if', 'config-subif', 'config-if-range', 'config-vlan', 'dhcp-config', 'config-router', 'config-line', 'config-std-nacl', 'config-ext-nacl'];
+const NACL_MODES = ['config-std-nacl', 'config-ext-nacl'];
 const IF_MODES = ['config-if', 'config-subif', 'config-if-range'];
 const EXEC = ['user', 'priv'];
 
@@ -107,6 +108,13 @@ C.describe({
   outside: 'Outside address translation',
   static: 'Static route or static translation entry',
   password: 'Assign the privileged level password',
+  standard: 'Standard access list (source address only)',
+  extended: 'Extended access list (protocol, source, destination and port)',
+  resequence: 'Renumber the lines of an access list',
+  permit: 'Specify packets to forward',
+  deny: 'Specify packets to reject',
+  remark: 'Access list entry comment',
+  counters: 'Clear access list match counters',
 });
 
 // ---------- mode navigation ----------
@@ -157,7 +165,12 @@ C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function (
 });
 C.add('priv', ['clear ip nat translation *'], function () { this.need('router') && this.d.nat.clear(); });
 C.add('priv', ['clear ip nat statistics'], function () { if (this.need('router')) { this.d.nat.hits = 0; this.d.nat.misses = 0; } });
-C.add('priv', ['clear access-list counters'], function () { if (this.d.acl) for (const l of this.d.acl.lists.values()) for (const r of l) r.hits = 0; });
+C.add('priv', ['clear access-list counters', 'clear access-list counters <word>', 'clear ip access-list counters', 'clear ip access-list counters <word>'], function ([name]) {
+  if (!this.d.acl) return;
+  const key = name === undefined ? null : aclKey(name);
+  if (key !== null && !this.d.acl.lists.has(key)) { this.print(`% Access list ${key} does not exist\n`); return; }
+  for (const [k, l] of this.d.acl.lists) if (key === null || k === key) for (const r of l) r.hits = 0;
+});
 C.add(EXEC, ['terminal length <n>', 'terminal monitor', 'terminal no monitor'], function () {});
 C.add(EXEC, ['show version'], function () { this.showVersion(); });
 C.add(EXEC, ['show history'], function () { this.print(this.history.slice(-10).map((h) => `  ${h}`).join('\n') + '\n'); });
@@ -183,7 +196,7 @@ C.add(EXEC, ['show interfaces status'], function () { this.need('switch') && thi
 C.add(EXEC, ['show spanning-tree', 'show spanning-tree vlan <n>'], function () { this.need('switch') && this.showStp(); });
 C.add(EXEC, ['show ip dhcp binding'], function () { this.need('router') && this.showDhcpBinding(); });
 C.add(EXEC, ['show ip dhcp pool'], function () { this.need('router') && this.showDhcpPool(); });
-C.add(EXEC, ['show access-lists', 'show ip access-lists', 'show access-lists <n>'], function ([n]) { this.need('router') && this.showAcl(n); });
+C.add(EXEC, ['show access-lists', 'show ip access-lists', 'show access-lists <word>', 'show ip access-lists <word>'], function ([n]) { this.need('router') && this.showAcl(n === undefined ? undefined : aclKey(n)); });
 C.add(EXEC, ['show ip ospf neighbor', 'show ip ospf neighbor <if>'], function ([n]) { this.need('router') && this.showOspfNeighbors(n); });
 C.add(EXEC, ['show ip ospf database'], function () { this.need('router') && this.showOspfDatabase(); });
 C.add(EXEC, ['show ip ospf interface brief'], function () { this.need('router') && this.showOspfIfBrief(); });
@@ -235,15 +248,48 @@ C.add('config', ['no router ospf <n>'], function ([pid]) {
   if (this.d.ospf.enabled && this.d.ospf.processId === pid) { this.d.ospf.disable(); this.changed(); }
 });
 C.add('config', ['no router rip'], function () { this.need('router') && this.d.rip.disable(); });
-C.add('config', ['access-list <n> <line>'], function ([n, rest]) { this.need('router') && this.addAcl(n, rest); });
-C.add('config', ['ip nat inside source list <n> interface <if> overload', 'ip nat inside source list <n> interface <if>'], function ([n, ifn]) {
+C.add('config', ['access-list <n> <line>'], function ([n, rest]) {
+  if (!this.need('router')) return;
+  const type = numberedType(n);
+  if (!type) { this.print('% Access list number must be 1-99 (standard) or 100-199 (extended)\n'); return; }
+  const rule = this.parseAclEntry(type, rest);
+  if (rule) this.reportAcl(this.d.acl.add(n, rule));
+});
+C.add('config', ['ip access-list standard|extended <word>'], function ([type, name]) {
+  if (!this.need('router')) return;
+  const key = aclKey(name);
+  if (typeof key === 'string' && !/^[A-Za-z][\w.-]*$/.test(key)) { this.print('% Access list names start with a letter and use letters, digits, "-", "_" and "."\n'); return; }
+  const err = this.d.acl.create(key, type);
+  if (err) { this.print(`${err}\n`); return; }
+  this.mode = type === 'standard' ? 'config-std-nacl' : 'config-ext-nacl';
+  this.ctx = { acl: key };
+});
+C.add('config', ['no ip access-list standard|extended <word>'], function ([type, name]) {
+  if (!this.need('router')) return;
+  const key = aclKey(name);
+  if (!this.d.acl.lists.has(key)) return;
+  if (this.d.acl.typeOf(key) !== type) { this.print(`% ${key} is a ${this.d.acl.typeOf(key)} access list\n`); return; }
+  this.d.acl.remove(key);
+});
+C.add('config', ['ip access-list resequence <word> <n> <n>'], function ([name, start, step]) {
+  if (!this.need('router')) return;
+  const key = aclKey(name);
+  if (!this.d.acl.lists.has(key)) { this.print(`% Access list ${key} does not exist\n`); return; }
+  if (start < 1 || step < 1) { this.print('% The first number and the step must be at least 1\n'); return; }
+  const n = this.d.acl.lists.get(key).length;
+  if (n && start + (n - 1) * step > 2147483647) { this.print('% Sequence numbers would be too large\n'); return; }
+  this.d.acl.resequence(key, start, step);
+});
+C.add('config', ['ip nat inside source list <word> interface <if> overload', 'ip nat inside source list <word> interface <if>'], function ([name, ifn]) {
+  const n = aclKey(name);
   if (!this.need('router')) return;
   const i = this.d.getIface(ifn);
   if (!i) { this.print('% Invalid interface\n'); return; }
   this.d.nat.addRule({ acl: n, iface: i.name });
   this.changed();
 });
-C.add('config', ['no ip nat inside source list <n> interface <if> overload', 'no ip nat inside source list <n> interface <if>', 'no ip nat inside source list <n>'], function ([n, ifn]) {
+C.add('config', ['no ip nat inside source list <word> interface <if> overload', 'no ip nat inside source list <word> interface <if>', 'no ip nat inside source list <word>'], function ([name, ifn]) {
+  const n = aclKey(name);
   if (!this.need('router')) return;
   const nat = this.d.nat;
   if (ifn) nat.removeRule({ acl: n, iface: this.d.getIface(ifn)?.name || ifn });
@@ -323,8 +369,8 @@ C.add('config-subif', ['encapsulation dot1q <n>', 'encapsulation dot1q <n> nativ
 });
 C.add(['config-if', 'config-subif'], ['ip helper-address <ip>'], function ([h]) { if (this.need('router')) { const i = this.ctx.iface; i.helpers = [...new Set([...(i.helpers || []), h])]; } });
 C.add(['config-if', 'config-subif'], ['no ip helper-address', 'no ip helper-address <ip>'], function ([h]) { const i = this.ctx.iface; i.helpers = h ? (i.helpers || []).filter((x) => x !== h) : []; });
-C.add(['config-if', 'config-subif'], ['ip access-group <n> in|out'], function ([n, dir]) { if (this.need('router')) this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = n; });
-C.add(['config-if', 'config-subif'], ['no ip access-group <n> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; });
+C.add(['config-if', 'config-subif'], ['ip access-group <word> in|out'], function ([n, dir]) { if (this.need('router')) this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = aclKey(n); });
+C.add(['config-if', 'config-subif'], ['no ip access-group <word> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; });
 C.add(['config-if', 'config-subif'], ['ip nat inside|outside'], function ([role]) { if (this.need('router')) { this.ctx.iface.nat = role; this.changed(); } });
 C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.need('router') && this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
 C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) { this.eachPort((p) => { p.sw.mode = m; }); this.changed(); });
@@ -401,6 +447,24 @@ C.add('config-router', ['auto-cost reference-bandwidth <n>'], ospfOnly(function 
 C.add('config-router', ['no auto-cost reference-bandwidth', 'no auto-cost reference-bandwidth <n>', 'no auto-cost'], ospfOnly(function () { this.d.ospf.setReferenceBw(100); }));
 C.add('config-router', ['log-adjacency-changes', 'log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = true; }));
 C.add('config-router', ['no log-adjacency-changes', 'no log-adjacency-changes detail'], ospfOnly(function () { this.d.ospf.logAdjacency = false; }));
+
+// ---------- named access lists ----------
+// ctx.acl is the list being edited; its type decides how entries are read.
+C.add(NACL_MODES, ['permit|deny <line>', 'remark <line>'], function (a) {
+  const action = a.length === 2 ? a[0] : 'remark';
+  this.addNaclEntry(null, `${action} ${a[a.length - 1]}`);
+});
+C.add(NACL_MODES, ['<n> permit|deny <line>', '<n> remark <line>'], function (a) {
+  const action = a.length === 3 ? a[1] : 'remark';
+  this.addNaclEntry(a[0], `${action} ${a[a.length - 1]}`);
+});
+C.add(NACL_MODES, ['no <n>'], function ([seq]) {
+  if (!this.d.acl.removeSeq(this.ctx.acl, seq)) this.print(`% Line ${seq} does not exist in access list ${this.ctx.acl}\n`);
+});
+C.add(NACL_MODES, ['no permit|deny <line>'], function ([action, rest]) {
+  const rule = this.parseAclEntry(this.d.acl.typeOf(this.ctx.acl), `${action} ${rest}`);
+  if (rule && !this.d.acl.removeMatching(this.ctx.acl, rule)) this.print('% No matching entry in this access list\n');
+});
 
 // 'do' lets any exec command run from config modes
 C.add(CONFIG_MODES, ['do <line>'], function ([rest]) {
@@ -715,11 +779,16 @@ export class IosCli {
     this.changed();
   }
 
-  addAcl(num, rest) {
+  /** Reads "permit|deny|remark …" for a standard or extended list. Prints an error and returns null when it is not valid. */
+  parseAclEntry(type, rest) {
     const t = tokenize(rest);
     const action = (t.shift() || '').toLowerCase();
-    if (!['permit', 'deny', 'remark'].includes(action)) { this.print('% Invalid input: expected permit or deny\n'); return; }
-    if (action === 'remark') return;
+    if (!['permit', 'deny', 'remark'].includes(action)) { this.print('% Invalid input: expected permit or deny\n'); return null; }
+    if (action === 'remark') {
+      const text = rest.trim().replace(/^remark\s*/i, '');
+      if (text.length > 100) { this.print('% A remark can be at most 100 characters\n'); return null; }
+      return { action, text };
+    }
     const addr = () => {
       const w = (t.shift() || '').toLowerCase();
       if (w === 'any') return { any: true };
@@ -728,29 +797,35 @@ export class IosCli {
       if (t.length && isValidIp(t[0])) return { ip: w, wildcard: t.shift() };
       return { ip: w, wildcard: '0.0.0.0' };
     };
-    if (num >= 1 && num <= 99) {
+    if (type === 'standard') {
       const src = addr();
-      if (!src || t.length) { this.print('% Invalid access list entry\n'); return; }
-      this.d.acl.add(num, { action, src });
-    } else if (num >= 100 && num <= 199) {
-      const proto = (t.shift() || '').toLowerCase();
-      if (!['ip', 'icmp', 'tcp', 'udp'].includes(proto)) { this.print('% Invalid protocol (use ip, icmp, tcp or udp)\n'); return; }
-      const src = addr();
-      const dst = addr();
-      let port = null;
-      if (t.length) {
-        if (t[0].toLowerCase() !== 'eq') { this.print('% Only "eq <port>" is supported\n'); return; }
-        t.shift();
-        const p = t.shift();
-        const named = { www: 80, http: 80, domain: 53, telnet: 23, ftp: 21, smtp: 25, bootps: 67, bootpc: 68 };
-        port = /^\d+$/.test(p) ? Number(p) : named[p?.toLowerCase()];
-        if (!port) { this.print('% Bad port\n'); return; }
-      }
-      if (!src || !dst) { this.print('% Invalid access list entry\n'); return; }
-      this.d.acl.add(num, { action, proto, src, dst, port });
-    } else {
-      this.print('% Access list number must be 1-99 (standard) or 100-199 (extended)\n');
+      if (!src || t.length) { this.print('% Invalid access list entry\n'); return null; }
+      return { action, src };
     }
+    const proto = (t.shift() || '').toLowerCase();
+    if (!['ip', 'icmp', 'tcp', 'udp'].includes(proto)) { this.print('% Invalid protocol (use ip, icmp, tcp or udp)\n'); return null; }
+    const src = addr();
+    const dst = addr();
+    let port = null;
+    if (t.length) {
+      if (t[0].toLowerCase() !== 'eq') { this.print('% Only "eq <port>" is supported\n'); return null; }
+      t.shift();
+      const p = t.shift();
+      const named = { www: 80, http: 80, domain: 53, telnet: 23, ftp: 21, smtp: 25, bootps: 67, bootpc: 68 };
+      port = /^\d+$/.test(p) ? Number(p) : named[p?.toLowerCase()];
+      if (!port || t.length) { this.print('% Bad port\n'); return null; }
+    }
+    if (!src || !dst) { this.print('% Invalid access list entry\n'); return null; }
+    return { action, proto, src, dst, port };
+  }
+
+  reportAcl(err) { if (err) this.print(`${err}\n`); }
+
+  /** Adds a line to the named (or numbered) list being edited in config-std-nacl / config-ext-nacl mode. */
+  addNaclEntry(seq, text) {
+    const key = this.ctx.acl;
+    const rule = this.parseAclEntry(this.d.acl.typeOf(key), text);
+    if (rule) this.reportAcl(this.d.acl.add(key, rule, seq));
   }
 
   saveStartup() {
@@ -1084,12 +1159,17 @@ Interface        Role Sts Cost      Prio.Nbr Type
   }
 
   showAcl(only) {
-    const d = this.d;
+    const acl = this.d.acl;
+    if (only !== undefined && !acl.lists.has(only)) { this.print('\n'); return; }
     let out = '';
-    for (const [n, rules] of [...d.acl.lists.entries()].sort((a, b) => a[0] - b[0])) {
-      if (only && n !== only) continue;
-      out += `${n < 100 ? 'Standard' : 'Extended'} IP access list ${n}\n`;
-      d.acl.lines(n).forEach((l, i) => { out += `    ${(i + 1) * 10} ${l}${rules[i].hits ? ` (${rules[i].hits} match(es))` : ''}\n`; });
+    for (const k of acl.keys()) {
+      if (only !== undefined && k !== only) continue;
+      const type = acl.typeOf(k);
+      out += `${type === 'standard' ? 'Standard' : 'Extended'} IP access list ${k}\n`;
+      for (const r of acl.lists.get(k)) {
+        if (r.action === 'remark') continue;
+        out += `    ${r.seq} ${ruleText(type, r)}${r.hits ? ` (${r.hits} match(es))` : ''}\n`;
+      }
     }
     this.print(out || '\n');
   }
@@ -1272,7 +1352,11 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
       L.push('ip classless');
       for (const r of d.staticRoutes) L.push(`ip route ${r.network} ${r.mask} ${r.iface ? r.iface + (r.nextHop ? ` ${r.nextHop}` : '') : r.nextHop}${r.ad && r.ad !== 1 ? ` ${r.ad}` : ''}`);
       L.push('!', 'ip flow-export version 9', '!');
-      for (const [n] of [...d.acl.lists.entries()].sort((a, b) => a[0] - b[0])) for (const l of d.acl.lines(n)) L.push(`access-list ${n} ${l}`);
+      for (const k of d.acl.keys()) {
+        if (typeof k === 'number') { for (const l of d.acl.lines(k)) L.push(`access-list ${k} ${l}`); continue; }
+        L.push(`ip access-list ${d.acl.typeOf(k)} ${k}`);
+        for (const l of d.acl.lines(k)) L.push(` ${l}`);
+      }
       if (d.acl.lists.size) L.push('!');
     } else {
       L.push('spanning-tree mode pvst');
