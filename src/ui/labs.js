@@ -419,6 +419,50 @@ export const LABS = [
     ],
   },
   {
+    id: 'acl-named',
+    title: 'Edit a named access list',
+    level: 'Advanced',
+    summary: 'Change one line of a named extended access list without retyping the whole list.',
+    build(net) {
+      dev(net, 'router', 'R1', 0, 0);
+      dev(net, 'switch', 'S1', -220, 0);
+      dev(net, 'pc', 'Staff', -380, -110);
+      dev(net, 'pc', 'Guest', -380, 110);
+      dev(net, 'server', 'Files', 240, 0);
+      wire(net, 'R1', 'GigabitEthernet0/0', 'S1', 'GigabitEthernet0/1');
+      wire(net, 'Staff', 'FastEthernet0', 'S1', 'FastEthernet0/1');
+      wire(net, 'Guest', 'FastEthernet0', 'S1', 'FastEthernet0/2');
+      wire(net, 'Files', 'FastEthernet0', 'R1', 'GigabitEthernet0/1');
+      const r = find(net, 'R1');
+      for (const [i, ip] of [['GigabitEthernet0/0', '192.168.1.1'], ['GigabitEthernet0/1', '192.168.99.1']]) { const f = r.getIface(i); f.ip = ip; f.mask = '255.255.255.0'; r.getPort(i).shutdown = false; net.notifyPort(r.getPort(i)); }
+      // a list that is too strict: it blocks everything from Guest to Files
+      const host = (ip) => ({ ip, wildcard: '0.0.0.0' });
+      r.acl.create('FILES-OUT', 'extended');
+      r.acl.add('FILES-OUT', { action: 'deny', proto: 'ip', src: host('192.168.1.50'), dst: host('192.168.99.10'), port: null });
+      r.acl.add('FILES-OUT', { action: 'permit', proto: 'ip', src: { any: true }, dst: { any: true }, port: null });
+      r.getIface('GigabitEthernet0/1').aclOut = 'FILES-OUT';
+      find(net, 'Staff').setStatic({ ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Guest').setStatic({ ip: '192.168.1.50', mask: '255.255.255.0', gateway: '192.168.1.1' });
+      find(net, 'Files').setStatic({ ip: '192.168.99.10', mask: '255.255.255.0', gateway: '192.168.99.1' });
+    },
+    guide: `<p>R1 filters traffic to the <b>Files</b> server with a named extended access list, <b>FILES-OUT</b>. Its first line blocks everything from <b>Guest</b> (192.168.1.50). Guest should still be able to ping Files, and only the website (TCP port 80) should be blocked.</p>
+      <p>Every line of an access list has a sequence number, so you can change one line without removing the list and typing it again. This works for numbered lists too, with <code>ip access-list extended 100</code>.</p>
+      <ol>
+        <li>On R1, run <code>show access-lists</code>. Note the numbers 10 and 20 in front of the lines.</li>
+        <li>Open the list: <code>ip access-list extended FILES-OUT</code>. The prompt changes to <code>R1(config-ext-nacl)#</code>.</li>
+        <li>Add a new first line: <code>5 deny tcp host 192.168.1.50 host 192.168.99.10 eq www</code>. Lines are checked from the lowest number up.</li>
+        <li>Remove the old line: <code>no 10</code></li>
+        <li>Run <code>do show access-lists</code>. Ping Files from Guest, then open <code>http://192.168.99.10</code> in the web browsers of Guest and Staff.</li>
+      </ol>
+      <p class="note">In simulation mode, the packet inspector says which line of the list matched each packet.</p>`,
+    checks: [
+      { text: 'R1 G0/1 still filters outbound traffic with FILES-OUT', fn: (n) => find(n, 'R1').getIface('GigabitEthernet0/1').aclOut === 'FILES-OUT' && find(n, 'R1').acl.typeOf('FILES-OUT') === 'extended' },
+      { text: 'Guest can ping Files', fn: (n) => canReach(n, 'Guest', '192.168.99.10') },
+      { text: 'Guest cannot open the website on Files', fn: (n) => !canBrowse(n, 'Guest', 'http://192.168.99.10/') },
+      { text: 'Staff can open the website on Files', fn: (n) => canBrowse(n, 'Staff', 'http://192.168.99.10/') },
+    ],
+  },
+  {
     id: 'nat-overload',
     title: 'Share one public address',
     level: 'Advanced',

@@ -11,6 +11,7 @@
 //   inboundMatch(iface, pkt) / translateIn(entry, pkt) before routing, for outside → inside traffic
 
 import { inSubnet, isValidIp } from './util.js';
+import { aclKey } from './acl.js';
 
 // Idle timeouts in milliseconds (the usual defaults on routers)
 export const NAT_TIMEOUTS = { icmp: 60 * 1000, udp: 5 * 60 * 1000, tcp: 24 * 60 * 60 * 1000 };
@@ -255,8 +256,9 @@ export class Nat {
   }
 
   load(c = {}) {
-    this.rules = (c.rules || []).filter((x) => x && Number.isInteger(Number(x.acl)) && typeof x.iface === 'string')
-      .map((x) => ({ acl: Number(x.acl), iface: x.iface, overload: true }));
+    // the access list is a number, or a name for a named list
+    this.rules = (c.rules || []).filter((x) => x && (Number.isInteger(Number(x.acl)) || (typeof x.acl === 'string' && x.acl)) && typeof x.iface === 'string')
+      .map((x) => ({ acl: aclKey(x.acl), iface: x.iface, overload: true }));
     this.statics = [];
     for (const x of c.statics || []) if (x && isValidIp(x.local) && isValidIp(x.global)) this.addStatic(x.local, x.global);
     this.table = [];

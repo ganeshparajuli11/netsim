@@ -4,7 +4,7 @@ import { L3Device } from './l3.js';
 import { DhcpServer } from './dhcp.js';
 import { Rip } from './rip.js';
 import { Ospf, validInt } from './ospf.js';
-import { Acl } from './acl.js';
+import { Acl, aclKey } from './acl.js';
 import { Nat } from './nat.js';
 
 export class Router extends L3Device {
@@ -175,8 +175,8 @@ export class Router extends L3Device {
       i.mask = ic.mask || null;
       i.description = ic.description || '';
       i.helpers = ic.helpers || [];
-      i.aclIn = ic.aclIn || null;
-      i.aclOut = ic.aclOut || null;
+      i.aclIn = ic.aclIn ? aclKey(ic.aclIn) : null;
+      i.aclOut = ic.aclOut ? aclKey(ic.aclOut) : null;
       i.ripPassive = !!ic.rip?.passive;
       i.ospf = ic.ospf ? { ...ic.ospf } : undefined;
       i.bandwidth = validInt(ic.bandwidth, 1, 10000000);

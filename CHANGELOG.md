@@ -2,6 +2,17 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.7.0 (2026-10-28)
+
+- Named access lists. `ip access-list standard NAME` and `ip access-list extended NAME` open the list in its own mode (`R1(config-std-nacl)#`, `R1(config-ext-nacl)#`), where you type `permit`, `deny` and `remark` lines. Apply them with `ip access-group NAME in|out`, or use one for NAT with `ip nat inside source list NAME interface <if> overload`.
+- Sequence numbers. Every line of every list has one. `15 deny …` inserts a line between 10 and 20, a line without a number goes after the last one, and `no 15` removes one line. `no permit|deny …` removes the matching line. `ip access-list resequence NAME <first> <step>` renumbers a list. `ip access-list standard 10` edits numbered list 10 the same way.
+- `show access-lists` shows the real sequence numbers and named lists, and takes a list name. `show running-config` prints named lists as `ip access-list` blocks, with remarks. `clear access-list counters [NAME]` clears one list or all of them.
+- The packet inspector says which line of the list permitted or denied a packet, and says so when an applied list is missing or empty (both filter nothing).
+- The router refuses a name that is already a list of the other type, a number in the wrong range for the type, names that don't start with a letter, and duplicate sequence numbers.
+- Access list edits and `ip access-group` changes are now autosaved straight away. Before, they were only saved with the next other change.
+- New lab: "Edit a named access list", where you change one line of an extended list so a guest can ping a server but not open its website.
+- Saved files keep names, sequence numbers and remarks. Files saved by older versions open with their lines numbered 10, 20, 30…
+
 ## 0.6.0 (2026-10-27)
 
 - Static NAT (RFC 3022 basic NAT). `ip nat inside source static <inside local> <inside global>` maps one inside address to one public address in both directions and for every protocol, so hosts on the internet can start conversations with an inside server. Ports and ICMP identifiers are left alone. `no ip nat inside source static …` removes a mapping.

@@ -12,11 +12,11 @@ There's no install, no account and no server. Open `index.html` through any stat
 | Layer 2 | MAC learning and flooding, VLANs, access and 802.1Q trunk ports, native VLAN, allowed-VLAN lists, spanning tree (root election, root/designated/blocked ports), switch management SVI |
 | Layer 3 | ARP (with proxy ARP on routers), IPv4 forwarding with TTL, longest-prefix match, connected/local/static routes, default and floating static routes (administrative distance), router-on-a-stick sub-interfaces, RIP version 2 with split horizon and triggered updates, single-area OSPF (hellos, DR/BDR election, LSA flooding, shortest-path routes with bandwidth-based costs) |
 | Services | DHCP server (router pools or server GUI), DHCP relay (`ip helper-address`), DNS server, simple web server and browser |
-| Security | Numbered standard (1–99) and extended (100–199) access lists, `ip access-group in/out`, implicit deny, hit counters |
+| Security | Numbered standard (1–99) and extended (100–199) access lists, named lists with `ip access-list standard\|extended NAME`, sequence numbers (insert a line with `15 permit …`, remove one with `no 15`, `ip access-list resequence`), remarks, `ip access-group in/out`, implicit deny, hit counters |
 | NAT | NAT overload (PAT) with `ip nat inside/outside` and `ip nat inside source list <acl> interface <if> overload`; TCP/UDP ports and ICMP identifiers, idle timeouts, ICMP errors translated back so traceroute works; static NAT with `ip nat inside source static <inside> <outside>`, including ARP replies for the public address |
 | Router/switch CLI | User/privileged/config modes, unique-prefix abbreviations (`sh ip int br`), `?` help, Tab completion, history, `do`, `interface range`, `show running-config`, `show ip route`, `show vlan brief`, `show interfaces trunk`, `show spanning-tree`, `show mac address-table`, `show cdp neighbors`, `show ip dhcp binding`, `show access-lists`, `show ip nat translations`, `show ip nat statistics`, `show ip protocols`, `show ip ospf neighbor`, `show ip ospf database`, `show ip ospf interface brief`, `copy run start`, `reload`, `ping`, `traceroute` and more |
 | PC command prompt | `ipconfig [/all /release /renew]`, `ping [-n]`, `tracert`, `arp -a/-d`, `nslookup`, `route print` |
-| Learning | Simulation mode with step/play, protocol filters, animated envelopes, a per-hop packet inspector (Ethernet, 802.1Q, ARP, IPv4, ICMP, UDP, DHCP, DNS, RIP, OSPF, HTTP), and twelve guided labs with automatic checks |
+| Learning | Simulation mode with step/play, protocol filters, animated envelopes, a per-hop packet inspector (Ethernet, 802.1Q, ARP, IPv4, ICMP, UDP, DHCP, DNS, RIP, OSPF, HTTP), and thirteen guided labs with automatic checks |
 | Files | Autosave in the browser, plus save/open topologies as `.onsim.json` |
 
 ### Guided labs
@@ -30,9 +30,10 @@ There's no install, no account and no server. Open `index.html` through any stat
 7. Dynamic routing with RIP
 8. OSPF in one area
 9. Filter traffic with an access list
-10. Share one public address (NAT overload)
-11. Publish a server with static NAT
-12. Loops and spanning tree
+10. Edit a named access list
+11. Share one public address (NAT overload)
+12. Publish a server with static NAT
+13. Loops and spanning tree
 
 Each lab builds a starting network, explains the goal and has a **Check my work** button. The checks run in a private copy of your network, so they never disturb what you're doing.
 
