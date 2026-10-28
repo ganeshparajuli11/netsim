@@ -446,7 +446,7 @@ export const LABS = [
       find(net, 'Files').setStatic({ ip: '192.168.99.10', mask: '255.255.255.0', gateway: '192.168.99.1' });
     },
     guide: `<p>R1 filters traffic to the <b>Files</b> server with a named extended access list, <b>FILES-OUT</b>. Its first line blocks everything from <b>Guest</b> (192.168.1.50). Guest should still be able to ping Files, and only the website (TCP port 80) should be blocked.</p>
-      <p>With a numbered list you would have to remove the list and type it again. In a named list every line has a sequence number, so you can change one line.</p>
+      <p>Every line of an access list has a sequence number, so you can change one line without removing the list and typing it again. This works for numbered lists too, with <code>ip access-list extended 100</code>.</p>
       <ol>
         <li>On R1, run <code>show access-lists</code>. Note the numbers 10 and 20 in front of the lines.</li>
         <li>Open the list: <code>ip access-list extended FILES-OUT</code>. The prompt changes to <code>R1(config-ext-nacl)#</code>.</li>

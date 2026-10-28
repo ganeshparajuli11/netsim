@@ -9,6 +9,7 @@ Newest first. One entry per merged pull request.
 - `show access-lists` shows the real sequence numbers and named lists, and takes a list name. `show running-config` prints named lists as `ip access-list` blocks, with remarks. `clear access-list counters [NAME]` clears one list or all of them.
 - The packet inspector says which line of the list permitted or denied a packet, and says so when an applied list is missing or empty (both filter nothing).
 - The router refuses a name that is already a list of the other type, a number in the wrong range for the type, names that don't start with a letter, and duplicate sequence numbers.
+- Access list edits and `ip access-group` changes are now autosaved straight away. Before, they were only saved with the next other change.
 - New lab: "Edit a named access list", where you change one line of an extended list so a guest can ping a server but not open its website.
 - Saved files keep names, sequence numbers and remarks. Files saved by older versions open with their lines numbered 10, 20, 30…
 

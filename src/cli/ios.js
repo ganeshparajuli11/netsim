@@ -259,8 +259,10 @@ C.add('config', ['ip access-list standard|extended <word>'], function ([type, na
   if (!this.need('router')) return;
   const key = aclKey(name);
   if (typeof key === 'string' && !/^[A-Za-z][\w.-]*$/.test(key)) { this.print('% Access list names start with a letter and use letters, digits, "-", "_" and "."\n'); return; }
+  const isNew = !this.d.acl.lists.has(key);
   const err = this.d.acl.create(key, type);
   if (err) { this.print(`${err}\n`); return; }
+  if (isNew) this.changed();
   this.mode = type === 'standard' ? 'config-std-nacl' : 'config-ext-nacl';
   this.ctx = { acl: key };
 });
@@ -270,6 +272,7 @@ C.add('config', ['no ip access-list standard|extended <word>'], function ([type,
   if (!this.d.acl.lists.has(key)) return;
   if (this.d.acl.typeOf(key) !== type) { this.print(`% ${key} is a ${this.d.acl.typeOf(key)} access list\n`); return; }
   this.d.acl.remove(key);
+  this.changed();
 });
 C.add('config', ['ip access-list resequence <word> <n> <n>'], function ([name, start, step]) {
   if (!this.need('router')) return;
@@ -279,6 +282,7 @@ C.add('config', ['ip access-list resequence <word> <n> <n>'], function ([name, s
   const n = this.d.acl.lists.get(key).length;
   if (n && start + (n - 1) * step > 2147483647) { this.print('% Sequence numbers would be too large\n'); return; }
   this.d.acl.resequence(key, start, step);
+  this.changed();
 });
 C.add('config', ['ip nat inside source list <word> interface <if> overload', 'ip nat inside source list <word> interface <if>'], function ([name, ifn]) {
   const n = aclKey(name);
@@ -310,7 +314,7 @@ C.add('config', ['no ip nat inside source static <ip> <ip>'], function ([local, 
   if (!this.d.nat.removeStatic(local, global)) { this.print(`% Translation not found\n`); return; }
   this.changed();
 });
-C.add('config', ['no access-list <n>'], function ([n]) { this.need('router') && this.d.acl.remove(n); });
+C.add('config', ['no access-list <n>'], function ([n]) { if (this.need('router')) { this.d.acl.remove(n); this.changed(); } });
 C.add('config', ['line con <n>', 'line console <n>', 'line vty <n> <n>', 'line aux <n>'], function () { this.mode = 'config-line'; });
 C.add('config', ['spanning-tree vlan <n> priority <n>'], function ([, p]) {
   if (!this.need('switch')) return;
@@ -369,8 +373,8 @@ C.add('config-subif', ['encapsulation dot1q <n>', 'encapsulation dot1q <n> nativ
 });
 C.add(['config-if', 'config-subif'], ['ip helper-address <ip>'], function ([h]) { if (this.need('router')) { const i = this.ctx.iface; i.helpers = [...new Set([...(i.helpers || []), h])]; } });
 C.add(['config-if', 'config-subif'], ['no ip helper-address', 'no ip helper-address <ip>'], function ([h]) { const i = this.ctx.iface; i.helpers = h ? (i.helpers || []).filter((x) => x !== h) : []; });
-C.add(['config-if', 'config-subif'], ['ip access-group <word> in|out'], function ([n, dir]) { if (this.need('router')) this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = aclKey(n); });
-C.add(['config-if', 'config-subif'], ['no ip access-group <word> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; });
+C.add(['config-if', 'config-subif'], ['ip access-group <word> in|out'], function ([n, dir]) { if (this.need('router')) { this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = aclKey(n); this.changed(); } });
+C.add(['config-if', 'config-subif'], ['no ip access-group <word> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; this.changed(); });
 C.add(['config-if', 'config-subif'], ['ip nat inside|outside'], function ([role]) { if (this.need('router')) { this.ctx.iface.nat = role; this.changed(); } });
 C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.need('router') && this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
 C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) { this.eachPort((p) => { p.sw.mode = m; }); this.changed(); });
@@ -460,10 +464,13 @@ C.add(NACL_MODES, ['<n> permit|deny <line>', '<n> remark <line>'], function (a) 
 });
 C.add(NACL_MODES, ['no <n>'], function ([seq]) {
   if (!this.d.acl.removeSeq(this.ctx.acl, seq)) this.print(`% Line ${seq} does not exist in access list ${this.ctx.acl}\n`);
+  else this.changed();
 });
 C.add(NACL_MODES, ['no permit|deny <line>'], function ([action, rest]) {
   const rule = this.parseAclEntry(this.d.acl.typeOf(this.ctx.acl), `${action} ${rest}`);
-  if (rule && !this.d.acl.removeMatching(this.ctx.acl, rule)) this.print('% No matching entry in this access list\n');
+  if (!rule) return;
+  if (this.d.acl.removeMatching(this.ctx.acl, rule)) this.changed();
+  else this.print('% No matching entry in this access list\n');
 });
 
 // 'do' lets any exec command run from config modes
@@ -819,7 +826,8 @@ export class IosCli {
     return { action, proto, src, dst, port };
   }
 
-  reportAcl(err) { if (err) this.print(`${err}\n`); }
+  /** Prints an error from the access list engine, or saves the change. */
+  reportAcl(err) { if (err) this.print(`${err}\n`); else this.changed(); }
 
   /** Adds a line to the named (or numbered) list being edited in config-std-nacl / config-ext-nacl mode. */
   addNaclEntry(seq, text) {

@@ -267,3 +267,36 @@ test('files saved before named lists still load, with lines numbered 10, 20, 30'
   assert.match(pings(copy, 'Staff', '192.168.99.10'), /Received = 4/);
   assert.ok(r1);
 });
+
+test('every access list edit tells the app the configuration changed, so it is autosaved', () => {
+  const { net, t } = office();
+  let n = 0;
+  net.on('config', () => { n++; });
+  const steps = [
+    'conf t',
+    'ip access-list extended EDGE',
+    'permit ip any any',
+    '5 deny icmp any any',
+    'no 5',
+    'deny udp any any',
+    'no deny udp any any',
+    'exit',
+    'ip access-list resequence EDGE 1 1',
+    'access-list 10 permit any',
+    'no access-list 10',
+    'interface g0/1',
+    'ip access-group EDGE out',
+    'no ip access-group EDGE out',
+    'exit',
+    'no ip access-list extended EDGE',
+  ];
+  const counts = steps.map((line) => { const before = n; t.run(line); return n > before; });
+  assert.deepEqual(counts, [false, ...steps.slice(1).map((l) => l !== 'exit' && l !== 'interface g0/1')]);
+  // failed edits do not
+  const before = n;
+  t.run('ip access-list standard S\nexit');
+  const mid = n;
+  t.run('ip access-list standard S\n10 permit any\n10 deny any\nno 99\nend');
+  assert.equal(mid - before, 1);
+  assert.equal(n - mid, 1);
+});
