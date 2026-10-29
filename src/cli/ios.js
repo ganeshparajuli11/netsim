@@ -9,6 +9,7 @@ import {
 } from '../engine/util.js';
 import { addrToString, aclKey, numberedType, ruleText } from '../engine/acl.js';
 import { bandwidthKbps } from '../engine/ospf.js';
+import { parseMac, portSecurityStatus, PSEC_MAX } from '../engine/portsec.js';
 
 const CONFIG_MODES = ['config', 'config-if', 'config-subif', 'config-if-range', 'config-vlan', 'dhcp-config', 'config-router', 'config-line', 'config-std-nacl', 'config-ext-nacl'];
 const NACL_MODES = ['config-std-nacl', 'config-ext-nacl'];
@@ -115,6 +116,13 @@ C.describe({
   deny: 'Specify packets to reject',
   remark: 'Access list entry comment',
   counters: 'Clear access list match counters',
+  'port-security': 'Secure the port by limiting the MAC addresses it accepts',
+  maximum: 'Maximum number of secure addresses',
+  violation: 'What to do when a frame breaks the port security rules',
+  'mac-address': 'Secure MAC address',
+  sticky: 'Learn secure addresses and keep them in the running configuration',
+  protect: 'Drop frames from addresses that are not secure',
+  restrict: 'Drop, count and log frames from addresses that are not secure',
 });
 
 // ---------- mode navigation ----------
@@ -203,6 +211,9 @@ C.add(EXEC, ['show ip ospf interface brief'], function () { this.need('router') 
 C.add(EXEC, ['show ip nat translations'], function () { this.need('router') && this.showNatTranslations(false); });
 C.add(EXEC, ['show ip nat translations verbose'], function () { this.need('router') && this.showNatTranslations(true); });
 C.add(EXEC, ['show ip nat statistics'], function () { this.need('router') && this.showNatStatistics(); });
+C.add(EXEC, ['show port-security'], function () { this.need('switch') && this.showPortSecurity(); });
+C.add(EXEC, ['show port-security interface <if>'], function ([n]) { this.need('switch') && this.showPortSecurityIf(n); });
+C.add(EXEC, ['show port-security address'], function () { this.need('switch') && this.showPortSecurityAddr(); });
 C.add(EXEC, ['show ip protocols'], function () { this.need('router') && this.showProtocols(); });
 
 // ---------- global config ----------
@@ -342,7 +353,7 @@ C.add(IF_MODES, ['shutdown'], function () { this.eachIface((i) => this.setShutdo
 C.add(IF_MODES, ['no shutdown'], function () { this.eachIface((i) => this.setShutdown(i, false)); });
 C.add(IF_MODES, ['description <line>'], function ([t]) { this.eachIface((i) => { i.description = t; if (i.port?.sw) i.port.sw.description = t; }); });
 C.add(IF_MODES, ['no description'], function () { this.eachIface((i) => { i.description = ''; if (i.port?.sw) i.port.sw.description = ''; }); });
-C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'switchport port-security', 'cdp enable', 'no cdp enable', 'clock rate <n>'], function () {});
+C.add(IF_MODES, ['duplex <word>', 'speed <word>', 'no duplex', 'no speed', 'mdix auto', 'switchport nonegotiate', 'no switchport nonegotiate', 'spanning-tree portfast', 'no spanning-tree portfast', 'spanning-tree portfast <word>', 'spanning-tree bpduguard enable', 'cdp enable', 'no cdp enable', 'clock rate <n>'], function () {});
 C.add(IF_MODES, ['bandwidth <n>'], function ([kbps]) {
   if (kbps < 1 || kbps > 10000000) { this.print('% Bandwidth must be between 1 and 10000000 kbit/s\n'); return; }
   this.eachIface((i) => { if (!i.isPort) i.bandwidth = kbps; });
@@ -377,7 +388,53 @@ C.add(['config-if', 'config-subif'], ['ip access-group <word> in|out'], function
 C.add(['config-if', 'config-subif'], ['no ip access-group <word> in|out', 'no ip access-group in|out'], function (a) { const dir = a[a.length - 1]; this.ctx.iface[dir === 'in' ? 'aclIn' : 'aclOut'] = null; this.changed(); });
 C.add(['config-if', 'config-subif'], ['ip nat inside|outside'], function ([role]) { if (this.need('router')) { this.ctx.iface.nat = role; this.changed(); } });
 C.add(['config-if', 'config-subif'], ['no ip nat inside|outside'], function ([role]) { if (this.need('router') && this.ctx.iface.nat === role) { delete this.ctx.iface.nat; this.changed(); } });
-C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) { this.eachPort((p) => { p.sw.mode = m; }); this.changed(); });
+C.add(IF_MODES, ['switchport mode access|trunk'], function ([m]) {
+  this.eachPort((p) => {
+    if (m === 'trunk' && p.sw.portSecurity.enabled) { this.print(`% Command rejected: ${p.name} has port security on. Enter "no switchport port-security" first.\n`); return; }
+    p.sw.mode = m;
+  });
+  this.changed();
+});
+C.add(IF_MODES, ['switchport port-security'], function () {
+  this.eachPort((p) => {
+    if (p.sw.mode !== 'access') { this.print(`% Command rejected: ${p.name} is a trunk port. Port security works on access ports only.\n`); return; }
+    p.sw.portSecurity.enabled = true;
+  });
+  this.changed();
+}, 'Turn on port security');
+C.add(IF_MODES, ['no switchport port-security'], function () {
+  this.eachPort((p) => {
+    const ps = p.sw.portSecurity;
+    ps.enabled = false;
+    ps.addresses = ps.addresses.filter((a) => a.type !== 'dynamic');
+  });
+  this.changed();
+});
+C.add(IF_MODES, ['switchport port-security maximum <n>'], function ([n]) { this.setPsecMax(n); });
+C.add(IF_MODES, ['no switchport port-security maximum', 'no switchport port-security maximum <n>'], function () { this.setPsecMax(1); });
+C.add(IF_MODES, ['switchport port-security violation shutdown|restrict|protect'], function ([v]) { this.eachPort((p) => { p.sw.portSecurity.violation = v; }); this.changed(); });
+C.add(IF_MODES, ['no switchport port-security violation', 'no switchport port-security violation shutdown|restrict|protect'], function () { this.eachPort((p) => { p.sw.portSecurity.violation = 'shutdown'; }); this.changed(); });
+C.add(IF_MODES, ['switchport port-security mac-address sticky'], function () {
+  this.eachPort((p) => {
+    const ps = p.sw.portSecurity;
+    ps.sticky = true;
+    for (const a of ps.addresses) if (a.type === 'dynamic') a.type = 'sticky';
+  });
+  this.changed();
+});
+C.add(IF_MODES, ['no switchport port-security mac-address sticky'], function () {
+  this.eachPort((p) => {
+    const ps = p.sw.portSecurity;
+    ps.sticky = false;
+    // learned addresses stay secure until the link goes down, but leave the configuration
+    for (const a of ps.addresses) if (a.type === 'sticky') a.type = 'dynamic';
+    if (!p.isUp()) ps.addresses = ps.addresses.filter((a) => a.type !== 'dynamic');
+  });
+  this.changed();
+});
+C.add(IF_MODES, ['switchport port-security mac-address sticky <word>'], function ([mac]) { this.addPsecMac(mac, 'sticky'); });
+C.add(IF_MODES, ['switchport port-security mac-address <word>'], function ([mac]) { this.addPsecMac(mac, 'static'); });
+C.add(IF_MODES, ['no switchport port-security mac-address sticky <word>', 'no switchport port-security mac-address <word>'], function ([mac]) { this.removePsecMac(mac); });
 C.add(IF_MODES, ['switchport mode dynamic <word>', 'switchport trunk encapsulation dot1q'], function () {});
 C.add(IF_MODES, ['switchport access vlan <n>'], function ([v]) {
   if (v < 1 || v > 4094) { this.print('% Bad VLAN list\n'); return; }
@@ -718,6 +775,7 @@ export class IosCli {
       return;
     }
     const p = i.port;
+    if (shut && p.errDisabled) p.errDisabled = false; // shutdown, then no shutdown, recovers an err-disabled port
     if (p.shutdown === shut) return;
     p.shutdown = shut;
     if (shut && !p.isUp() && !p._up) d.syslog(`%LINK-5-CHANGED: Interface ${p.name}, changed state to administratively down`);
@@ -737,6 +795,45 @@ export class IosCli {
       else if ((m = s.match(/^except\s+(.+)$/))) { const l = parseRangeList(m[1]); if (l) p.sw.allowed = range(1, 4094).filter((v) => !l.includes(v)); }
       else { const l = parseRangeList(s); if (!l) { this.print('% Bad VLAN list\n'); return; } p.sw.allowed = l; }
     });
+    this.changed();
+  }
+
+  setPsecMax(n) {
+    if (n < 1 || n > PSEC_MAX) { this.print(`% Invalid maximum: use 1 to ${PSEC_MAX}\n`); return; }
+    this.eachPort((p) => {
+      const ps = p.sw.portSecurity;
+      const configured = ps.addresses.filter((a) => a.type !== 'dynamic').length;
+      if (configured > n) { this.print(`% ${p.name} already has ${configured} configured secure addresses. Remove some before lowering the maximum to ${n}.\n`); return; }
+      ps.maximum = n;
+      // forget the newest dynamic addresses that no longer fit
+      while (ps.addresses.length > n) {
+        const i = ps.addresses.map((a) => a.type).lastIndexOf('dynamic');
+        ps.addresses.splice(i, 1);
+      }
+    });
+    this.changed();
+  }
+
+  addPsecMac(text, type) {
+    const mac = parseMac(text);
+    if (!mac) { this.print(`% Invalid MAC address ${text}. Use the form 0001.0203.0405 (unicast only).\n`); return; }
+    this.eachPort((p) => {
+      const ps = p.sw.portSecurity;
+      if (p.sw.mode !== 'access') { this.print(`% Command rejected: ${p.name} is a trunk port. Port security works on access ports only.\n`); return; }
+      const other = this.d.ports.find((o) => o !== p && o.sw.accessVlan === p.sw.accessVlan && o.sw.portSecurity.addresses.some((a) => a.mac === mac));
+      if (other) { this.print(`% ${formatMac(mac)} is already a secure address on ${other.name}\n`); return; }
+      const have = ps.addresses.find((a) => a.mac === mac);
+      if (have) { have.type = type; return; }
+      if (ps.addresses.length >= ps.maximum) { this.print(`% ${p.name} already has its maximum of ${ps.maximum} secure address${ps.maximum > 1 ? 'es' : ''}. Raise the maximum first.\n`); return; }
+      ps.addresses.push({ mac, type });
+    });
+    this.changed();
+  }
+
+  removePsecMac(text) {
+    const mac = parseMac(text);
+    if (!mac) { this.print(`% Invalid MAC address ${text}\n`); return; }
+    this.eachPort((p) => { p.sw.portSecurity.addresses = p.sw.portSecurity.addresses.filter((a) => a.mac !== mac); });
     this.changed();
   }
 
@@ -955,7 +1052,7 @@ Configuration register is 0x2102
       let proto;
       if (i.port && !i.ip && d.type === 'switch' && !i.isSvi) {
         status = i.port.shutdown ? 'administratively down' : i.port.isUp() ? 'up' : 'down';
-        proto = i.port.isUp() ? 'up' : 'down';
+        proto = i.port.isUp() ? 'up' : i.port.errDisabled ? 'down (err-disabled)' : 'down';
       } else {
         const s = d.ifaceStatus(i);
         status = s.status; proto = s.protocol;
@@ -1063,7 +1160,18 @@ ${rows.join('\n')}${rows.length ? '\n' : ''}`);
   }
 
   showMacTable() {
-    const rows = this.d.macEntries().map((e) => `${String(e.vlan).padStart(4)}    ${formatMac(e.mac).padEnd(18)}DYNAMIC     ${shortIf(e.port.name)}`);
+    const secure = (port, mac) => port.sw.portSecurity?.enabled && port.sw.portSecurity.addresses.some((a) => a.mac === mac);
+    const entries = this.d.macEntries().map((e) => ({ ...e, type: secure(e.port, e.mac) ? 'STATIC' : 'DYNAMIC' }));
+    // configured secure addresses are listed even before the host has sent a frame
+    for (const p of this.d.ports) {
+      const ps = p.sw.portSecurity;
+      if (!ps?.enabled || p.sw.mode !== 'access' || !p.isUp()) continue;
+      for (const a of ps.addresses) {
+        if (!entries.some((e) => e.mac === a.mac && e.vlan === p.sw.accessVlan)) entries.push({ vlan: p.sw.accessVlan, mac: a.mac, port: p, type: 'STATIC' });
+      }
+    }
+    entries.sort((a, b) => a.vlan - b.vlan || a.mac.localeCompare(b.mac));
+    const rows = entries.map((e) => `${String(e.vlan).padStart(4)}    ${formatMac(e.mac).padEnd(18)}${e.type.padEnd(12)}${shortIf(e.port.name)}`);
     this.print(`          Mac Address Table
 -------------------------------------------
 
@@ -1106,10 +1214,75 @@ ${rows.join('\n')}${rows.length ? '\n' : ''}`);
     const d = this.d;
     let out = 'Port      Name               Status       Vlan       Duplex  Speed Type\n';
     for (const p of d.ports) {
-      const st = p.shutdown ? 'disabled' : p.isUp() ? 'connected' : 'notconnect';
+      const st = p.shutdown ? 'disabled' : p.errDisabled ? 'err-disabled' : p.isUp() ? 'connected' : 'notconnect';
       const vlan = p.sw.mode === 'trunk' ? 'trunk' : String(p.sw.accessVlan);
       out += `${shortIf(p.name).padEnd(10)}${(p.sw.description || '').slice(0, 18).padEnd(19)}${st.padEnd(13)}${vlan.padEnd(11)}auto    auto  ${/^Gig/.test(p.name) ? '10/100/1000BaseTX' : '10/100BaseTX'}\n`;
     }
+    this.print(out);
+  }
+
+  securePorts() {
+    return this.d.ports.filter((p) => p.sw.portSecurity.enabled && p.sw.mode === 'access');
+  }
+
+  showPortSecurity() {
+    const cap = (w) => w[0].toUpperCase() + w.slice(1);
+    let out = 'Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action\n'
+      + '                (Count)       (Count)          (Count)\n'
+      + '---------------------------------------------------------------------------\n';
+    let total = 0;
+    for (const p of this.securePorts()) {
+      const ps = p.sw.portSecurity;
+      total += Math.max(0, ps.addresses.length - 1);
+      out += `${shortIf(p.name).padStart(10)}${String(ps.maximum).padStart(15)}${String(ps.addresses.length).padStart(13)}${String(ps.violations).padStart(19)}${cap(ps.violation).padStart(17)}\n`;
+    }
+    out += '---------------------------------------------------------------------------\n';
+    out += `Total Addresses in System (excluding one mac per port)     : ${total}\n`;
+    out += 'Max Addresses limit in System (excluding one mac per port) : 1024\n';
+    this.print(out);
+  }
+
+  showPortSecurityIf(name) {
+    const p = this.d.getPort(name);
+    if (!p) { this.print('% Invalid interface\n'); return; }
+    const ps = p.sw.portSecurity;
+    const count = (t) => ps.addresses.filter((a) => a.type === t).length;
+    const last = ps.lastSource ? `${formatMac(ps.lastSource.mac)}:${ps.lastSource.vlan}` : '0000.0000.0000:0';
+    const cap = (w) => w[0].toUpperCase() + w.slice(1);
+    const rows = [
+      ['Port Security', ps.enabled ? 'Enabled' : 'Disabled'],
+      ['Port Status', portSecurityStatus(p)],
+      ['Violation Mode', cap(ps.violation)],
+      ['Aging Time', '0 mins'],
+      ['Aging Type', 'Absolute'],
+      ['SecureStatic Address Aging', 'Disabled'],
+      ['Maximum MAC Addresses', ps.maximum],
+      ['Total MAC Addresses', ps.addresses.length],
+      ['Configured MAC Addresses', count('static')],
+      ['Sticky MAC Addresses', count('sticky')],
+      ['Last Source Address:Vlan', last],
+      ['Security Violation Count', ps.violations],
+    ];
+    this.print(rows.map(([k, v]) => `${k.padEnd(27)}: ${v}`).join('\n') + '\n');
+  }
+
+  showPortSecurityAddr() {
+    const type = { static: 'SecureConfigured', sticky: 'SecureSticky', dynamic: 'SecureDynamic' };
+    let out = '               Secure Mac Address Table\n'
+      + '-----------------------------------------------------------------------------\n'
+      + 'Vlan    Mac Address       Type                          Ports   Remaining Age\n'
+      + '                                                                   (mins)\n'
+      + '----    -----------       ----                          -----   -------------\n';
+    let n = 0;
+    for (const p of this.securePorts()) {
+      for (const a of p.sw.portSecurity.addresses) {
+        n++;
+        out += `${String(p.sw.accessVlan).padStart(4)}    ${formatMac(a.mac).padEnd(18)}${type[a.type].padEnd(30)}${shortIf(p.name).padEnd(8)}   -\n`;
+      }
+    }
+    out += '-----------------------------------------------------------------------------\n';
+    out += `Total Addresses in System (excluding one mac per port)     : ${Math.max(0, n - this.securePorts().filter((p) => p.sw.portSecurity.addresses.length).length)}\n`;
+    out += 'Max Addresses limit in System (excluding one mac per port) : 1024\n';
     this.print(out);
   }
 
@@ -1381,6 +1554,15 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
         } else {
           if (p.sw.accessVlan !== 1) L.push(` switchport access vlan ${p.sw.accessVlan}`);
           if (p.sw.modeSet || p.sw.accessVlan !== 1 || p.sw.mode === 'access') { /* default */ }
+          const ps = p.sw.portSecurity;
+          if (ps.enabled) L.push(' switchport mode access', ' switchport port-security');
+          if (ps.maximum !== 1) L.push(` switchport port-security maximum ${ps.maximum}`);
+          if (ps.violation !== 'shutdown') L.push(` switchport port-security violation ${ps.violation}`);
+          if (ps.sticky) L.push(' switchport port-security mac-address sticky');
+          for (const a of ps.addresses) {
+            if (a.type === 'sticky') L.push(` switchport port-security mac-address sticky ${formatMac(a.mac)}`);
+            if (a.type === 'static') L.push(` switchport port-security mac-address ${formatMac(a.mac)}`);
+          }
         }
         if (p.shutdown) L.push(' shutdown');
         L.push('!');

@@ -525,7 +525,8 @@ class App {
         <h3>Link lights</h3>
         <dl class="kv"><dt><span class="legend"><i style="background:var(--up)"></i></span></dt><dd style="font-family:var(--ui)">Up and forwarding</dd>
         <dt><span class="legend"><i style="background:var(--wait)"></i></span></dt><dd style="font-family:var(--ui)">Blocked by spanning tree</dd>
-        <dt><span class="legend"><i style="background:var(--down)"></i></span></dt><dd style="font-family:var(--ui)">Down or shut down</dd></dl>
+        <dt><span class="legend"><i style="background:var(--down)"></i></span></dt><dd style="font-family:var(--ui)">Down or shut down</dd>
+        <dt><span class="legend"><i style="background:var(--down);box-shadow:0 0 0 2px var(--ink)"></i></span></dt><dd style="font-family:var(--ui)">Err-disabled by port security</dd></dl>
         ${this.pduLog.length ? `<h3>Quick pings</h3><table class="grid"><thead><tr><th>From</th><th>To</th><th>Result</th></tr></thead><tbody>${this.pduLog.map((p) => `<tr><td>${esc(p.src)}</td><td>${esc(p.dst)}</td><td class="${p.status === 'Successful' ? 'status-good' : p.status.startsWith('Failed') ? 'status-bad' : ''}">${esc(p.status)}</td></tr>`).join('')}</tbody></table>` : ''}
         <h3>Keyboard</h3>
         <dl class="kv"><dt>C</dt><dd style="font-family:var(--ui)">Cable tool</dd><dt>P</dt><dd style="font-family:var(--ui)">Quick ping tool</dd><dt>Del</dt><dd style="font-family:var(--ui)">Delete selection</dd><dt>Esc</dt><dd style="font-family:var(--ui)">Back to select</dd><dt>→ / Space</dt><dd style="font-family:var(--ui)">Step / play (simulation)</dd></dl>`;

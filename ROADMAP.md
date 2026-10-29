@@ -6,7 +6,6 @@ Each item should fit in one focused pull request. Split anything bigger before s
 
 ## Backlog
 
-- [ ] Switch port security: `switchport port-security`, `maximum`, `mac-address sticky`, `violation shutdown|restrict|protect`, err-disabled state with a red light, `show port-security`
 - [ ] Interface counters: packets in/out and drops per interface, shown in `show interfaces` and the Ports tab
 - [ ] Extended `ping` dialogue on routers (repeat, size, source, timeout) and `ping` with `-l` size on PCs
 - [ ] Telnet from a PC to a router or switch: `line vty 0 4`, `password`, `login`, then a remote CLI in the PC command prompt
@@ -41,3 +40,4 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [x] NAT overload (PAT): `ip nat inside/outside`, `ip nat inside source list <acl> interface <if> overload`, `show ip nat translations`, lab "Share one public address"
 - [x] Static NAT: `ip nat inside source static <inside> <outside>`, lab "Publish a server with static NAT"
 - [x] Named ACLs: `ip access-list standard|extended NAME` with numbered sequence lines and `no <seq>`, lab "Edit a named access list"
+- [x] Switch port security: `switchport port-security`, `maximum`, `mac-address sticky`, `violation shutdown|restrict|protect`, err-disabled state with a red light, `show port-security`

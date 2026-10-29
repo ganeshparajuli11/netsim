@@ -14,6 +14,7 @@ export class Port {
     this.mac = mac;
     this.link = null;
     this.shutdown = false;
+    this.errDisabled = false; // set by port security; cleared by shutdown / no shutdown
     this._up = false;
   }
   get peer() {
@@ -23,7 +24,7 @@ export class Port {
   /** Physical + administrative state of this end. */
   isUp() {
     const p = this.peer;
-    return !!(p && !this.shutdown && !p.shutdown && this.device.powered && p.device.powered);
+    return !!(p && !this.shutdown && !p.shutdown && !this.errDisabled && !p.errDisabled && this.device.powered && p.device.powered);
   }
 }
 
