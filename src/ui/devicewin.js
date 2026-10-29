@@ -288,9 +288,13 @@ class DeviceWindow {
     const d = this.d;
     const rows = d.ports.map((p) => {
       const peer = p.link ? `${p.peer.device.name} ${p.peer.name}` : '—';
-      const st = p.shutdown ? 'admin down' : p.isUp() ? (d.stp && !d.stp.forwarding(p) ? 'blocking (STP)' : 'up') : p.link ? 'down' : 'not connected';
+      const st = p.shutdown ? 'admin down' : p.errDisabled ? 'err-disabled (port security)' : p.isUp() ? (d.stp && !d.stp.forwarding(p) ? 'blocking (STP)' : 'up') : p.link ? 'down' : 'not connected';
       let extra = '';
-      if (d.type === 'switch') extra = p.sw.mode === 'trunk' ? `trunk (native ${p.sw.nativeVlan})` : `access VLAN ${p.sw.accessVlan}`;
+      if (d.type === 'switch') {
+        extra = p.sw.mode === 'trunk' ? `trunk (native ${p.sw.nativeVlan})` : `access VLAN ${p.sw.accessVlan}`;
+        const ps = p.sw.portSecurity;
+        if (ps?.enabled && p.sw.mode === 'access') extra += `, secure ${ps.addresses.length} of ${ps.maximum}`;
+      }
       if (d.type === 'router') {
         const ifs = d.ifaces.filter((i) => i.port === p && i.ip).map((i) => `${i.parent ? `.${i.name.split('.')[1]} ` : ''}${i.ip}/${i.mask ? i.mask.split('.').map(Number).reduce((a, o) => a + o.toString(2).split('1').length - 1, 0) : ''}`);
         extra = ifs.join(', ') || 'no IP';
@@ -299,6 +303,7 @@ class DeviceWindow {
       return `<tr><td>${p.name}</td><td class="${cls}">${st}</td><td>${esc(extra)}</td><td>${esc(peer)}</td><td>${formatMac(p.mac)}</td></tr>`;
     }).join('');
     this.body.innerHTML = `<table class="grid"><thead><tr><th>Port</th><th>Status</th><th>${d.type === 'switch' ? 'VLAN' : d.type === 'router' ? 'Address' : ''}</th><th>Connected to</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table>
+      ${d.type === 'switch' && d.ports.some((p) => p.errDisabled) ? '<p class="note">A port security violation put a port in the err-disabled state. In the CLI, enter <code>shutdown</code> and then <code>no shutdown</code> on that interface to bring it back.</p>' : ''}
       ${d.type === 'router' ? '<p class="note">Router interfaces start shut down. In the CLI: <code>enable</code>, <code>configure terminal</code>, <code>interface g0/0</code>, <code>ip address …</code>, <code>no shutdown</code>.</p>' : ''}`;
   }
 

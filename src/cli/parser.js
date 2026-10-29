@@ -129,7 +129,10 @@ export class CommandSet {
       // ambiguity: different keyword paths with the same exactness
       const top = ok[0];
       const path = (r) => r.m.lits.map((l) => l.lit).join(' ');
-      const rivals = ok.filter((r) => r.m.exact === top.m.exact && path(r) !== path(top));
+      // a rival whose keywords are all part of the top match only used a placeholder (<word>) where the
+      // top match has a keyword, so the keyword wins: "mac-address stick" means "mac-address sticky"
+      const subset = (r) => r.m.lits.every((l) => top.m.lits.some((t) => t.ti === l.ti && t.lit === l.lit));
+      const rivals = ok.filter((r) => r.m.exact === top.m.exact && path(r) !== path(top) && !subset(r));
       if (rivals.length) {
         const diff = top.m.lits.find((l, i) => rivals.some((r) => r.m.lits[i]?.lit !== l.lit));
         if (diff && tokens[diff.ti].toLowerCase() !== diff.lit) return { error: 'ambiguous', token: tokens[diff.ti], tokens };

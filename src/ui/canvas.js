@@ -73,6 +73,7 @@ export class Canvas {
   }
 
   lightState(port) {
+    if (port.errDisabled) return 'err-disabled';
     if (!port.isUp()) return 'down';
     const d = port.device;
     if (d.stp && d.stp.enabled && !d.stp.forwarding(port)) return 'wait';

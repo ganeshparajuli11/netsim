@@ -2,6 +2,17 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.8.0 (2026-10-29)
+
+- Switch port security. `switchport port-security` on an access port limits which source MAC addresses it accepts. `switchport port-security maximum <n>` sets how many (1 to 132, default 1).
+- Secure addresses can be learned and forgotten when the link goes down (dynamic), learned and kept in the running configuration with `switchport port-security mac-address sticky` (sticky), or typed in with `switchport port-security mac-address <mac>` (static). `no` forms remove them. An address that is secure on one port can't be used on another port in the same VLAN.
+- `switchport port-security violation shutdown|restrict|protect` picks what happens to a frame from any other address. Shutdown (the default) puts the port in the err-disabled state: both ends of the cable go down and the switch end shows a red light with a dark ring. Restrict drops the frame, counts it and logs it. Protect drops it quietly. Enter `shutdown` and then `no shutdown` to bring an err-disabled port back.
+- New commands: `show port-security`, `show port-security interface <if>` and `show port-security address`. `show interfaces status` says `err-disabled`, `show interfaces` says `line protocol is down (err-disabled)`, `show mac address-table` lists secure addresses as STATIC, and the Ports tab shows err-disabled ports and how many secure addresses each port has.
+- The switch refuses port security on trunk ports, and a secure port can't become a trunk until port security is off.
+- The packet inspector explains each learned secure address and each violation, including what the violation mode did.
+- CLI: an abbreviated keyword now wins over a free-text argument, so `switchport port-security mac-address stick` means `sticky` instead of being ambiguous.
+- Saved files keep port security settings, sticky and static addresses, and err-disabled ports. Files saved by older versions open with port security off.
+
 ## 0.7.0 (2026-10-28)
 
 - Named access lists. `ip access-list standard NAME` and `ip access-list extended NAME` open the list in its own mode (`R1(config-std-nacl)#`, `R1(config-ext-nacl)#`), where you type `permit`, `deny` and `remark` lines. Apply them with `ip access-group NAME in|out`, or use one for NAT with `ip nat inside source list NAME interface <if> overload`.

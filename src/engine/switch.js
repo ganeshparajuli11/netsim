@@ -3,6 +3,7 @@
 import { L3Device } from './l3.js';
 import { BROADCAST_MAC, randomMac } from './util.js';
 import { Stp } from './stp.js';
+import { checkPortSecurity, defaultPortSecurity, loadPortSecurity, savePortSecurity } from './portsec.js';
 
 const MAC_AGING = 300000;
 
@@ -13,7 +14,7 @@ export class Switch extends L3Device {
     for (let i = 1; i <= fast; i++) this.addPort(`FastEthernet0/${i}`);
     for (let i = 1; i <= gig; i++) this.addPort(`GigabitEthernet0/${i}`);
     for (const p of this.ports) {
-      p.sw = { mode: 'access', accessVlan: 1, nativeVlan: 1, allowed: null, description: '' };
+      p.sw = { mode: 'access', accessVlan: 1, nativeVlan: 1, allowed: null, description: '', portSecurity: defaultPortSecurity() };
     }
     this.vlans = new Map([[1, 'default']]);
     this.macTable = new Map(); // `${vlan}|${mac}` -> {port, time, vlan, mac}
@@ -53,6 +54,7 @@ export class Switch extends L3Device {
 
   // ---------- data plane ----------
   receive(port, frame) {
+    if (port.errDisabled) { this.explain(`${port.name} is err-disabled, frame discarded`); return; }
     if (frame.type === 'STP') { this.stp.receive(port, frame.payload); return; }
     if (!this.stp.forwarding(port)) { this.explain(`${port.name} is ${this.stp.state(port)} (spanning tree), frame discarded`); return; }
     let vlan;
@@ -67,6 +69,7 @@ export class Switch extends L3Device {
       vlan = port.sw.accessVlan;
     }
     if (!this.vlans.has(vlan)) { this.explain(`VLAN ${vlan} does not exist on this switch, frame dropped`); return; }
+    if (!checkPortSecurity(this, port, frame, vlan)) return;
     if (frame.src !== BROADCAST_MAC) {
       const k = `${vlan}|${frame.src}`;
       const prev = this.macTable.get(k);
@@ -114,7 +117,12 @@ export class Switch extends L3Device {
 
   onPortChange(port, up) {
     super.onPortChange(port, up);
-    if (!up) for (const [k, e] of this.macTable) if (e.port === port) this.macTable.delete(k);
+    if (!up) {
+      for (const [k, e] of this.macTable) if (e.port === port) this.macTable.delete(k);
+      // dynamic secure addresses are forgotten when the link goes down; sticky and static stay
+      const ps = port.sw.portSecurity;
+      if (ps) ps.addresses = ps.addresses.filter((a) => a.type !== 'dynamic');
+    }
     this.stp.portChanged(port, up);
     const state = port.shutdown ? 'administratively down' : up ? 'up' : 'down';
     this.syslog(`%LINK-${up ? 3 : 5}-UPDOWN: Interface ${port.name}, changed state to ${state}`);
@@ -133,7 +141,8 @@ export class Switch extends L3Device {
   resetConfig() {
     for (const p of this.ports) {
       p.shutdown = false;
-      p.sw = { mode: 'access', accessVlan: 1, nativeVlan: 1, allowed: null, description: '' };
+      p.errDisabled = false;
+      p.sw = { mode: 'access', accessVlan: 1, nativeVlan: 1, allowed: null, description: '', portSecurity: defaultPortSecurity() };
     }
     this.ifaces = [];
     this.makeIface('Vlan1', null, { isSvi: true, vlan: 1, mac: this.baseMac, shutdown: true });
@@ -156,7 +165,7 @@ export class Switch extends L3Device {
       enablePassword: this.enablePassword,
       banner: this.banner,
       vlans: [...this.vlans.entries()],
-      ports: this.ports.map((p) => ({ name: p.name, shutdown: p.shutdown, mac: p.mac, ...p.sw })),
+      ports: this.ports.map((p) => ({ name: p.name, shutdown: p.shutdown, errDisabled: p.errDisabled, mac: p.mac, ...p.sw, portSecurity: savePortSecurity(p.sw.portSecurity) })),
       svis: this.ifaces.filter((i) => i.isSvi).map((i) => ({ name: i.name, vlan: i.vlan, ip: i.ip, mask: i.mask, shutdown: i.shutdown })),
       defaultGateway: this.defaultGateway,
       baseMac: this.baseMac,
@@ -177,8 +186,9 @@ export class Switch extends L3Device {
       const p = this.getPort(pc.name);
       if (!p) continue;
       p.shutdown = !!pc.shutdown;
+      p.errDisabled = !!pc.errDisabled && !p.shutdown;
       if (pc.mac) p.mac = pc.mac;
-      p.sw = { mode: pc.mode || 'access', accessVlan: pc.accessVlan || 1, nativeVlan: pc.nativeVlan || 1, allowed: pc.allowed || null, description: pc.description || '' };
+      p.sw = { mode: pc.mode || 'access', accessVlan: pc.accessVlan || 1, nativeVlan: pc.nativeVlan || 1, allowed: pc.allowed || null, description: pc.description || '', portSecurity: loadPortSecurity(pc.portSecurity) };
     }
     if (c.svis) {
       this.ifaces = this.ifaces.filter((i) => !i.isSvi);

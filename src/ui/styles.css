@@ -115,6 +115,7 @@ button { cursor: pointer; }
 .light.up { fill: var(--up); }
 .light.wait { fill: var(--wait); }
 .light.down { fill: var(--down); }
+.light.err-disabled { fill: var(--down); stroke: var(--ink); stroke-width: 2; }
 .port-label { font: 11px var(--mono); fill: var(--ink-2); paint-order: stroke; stroke: var(--paper); stroke-width: 3px; pointer-events: none; }
 .show-ports-off .port-label { display: none; }
 
