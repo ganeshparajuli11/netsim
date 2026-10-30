@@ -2,7 +2,12 @@
 // Every frame that crosses a cable becomes a scheduled event, which is what lets the UI
 // step through a simulation one hop at a time.
 
-import { clone } from './util.js';
+import { clone, BROADCAST_MAC } from './util.js';
+
+/** Fresh traffic counters for one port. They are runtime state and are never saved. */
+export function newCounters() {
+  return { inPackets: 0, outPackets: 0, inBroadcasts: 0, outBroadcasts: 0, inDrops: 0, outDrops: 0 };
+}
 
 let linkSeq = 1;
 
@@ -16,6 +21,13 @@ export class Port {
     this.shutdown = false;
     this.errDisabled = false; // set by port security; cleared by shutdown / no shutdown
     this._up = false;
+    this.counters = newCounters();
+    this.countersClearedAt = null; // simulated time of the last "clear counters", or null
+  }
+  /** Zeroes the traffic counters. `now` is the simulated time, shown as "last clearing". */
+  clearCounters(now = null) {
+    this.counters = newCounters();
+    this.countersClearedAt = now;
   }
   get peer() {
     if (!this.link) return null;
@@ -154,6 +166,8 @@ export class Network {
     f._hops = (f._hops || 0) + 1;
     if (f._hops > 64) return false; // loop guard (no STP storm meltdown)
     f._id = f._id || `F${++this.eventSeq}`;
+    port.counters.outPackets++;
+    if (f.dst === BROADCAST_MAC) port.counters.outBroadcasts++;
     this.schedule(this.hopDelay, () => to.device.receive(to, f), {
       kind: 'frame', link: port.link, from: port, to, frame: f, sentAt: this.time,
     });
@@ -181,6 +195,8 @@ export class Network {
         summary: summarize(frame),
         notes: [],
       };
+      to.counters.inPackets++;
+      if (frame.dst === BROADCAST_MAC) to.counters.inBroadcasts++;
       this.current = rec;
       try { ev.fn(); } finally { this.current = null; }
       if (this.recording) {

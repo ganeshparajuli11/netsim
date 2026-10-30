@@ -65,6 +65,24 @@ export class Device {
 
   explain(text) { this.net?.explain(`${this.name}: ${text}`); }
 
+  /** Discards a frame that arrived on `port`: counts an input drop and explains why. */
+  dropIn(port, text) {
+    if (port) port.counters.inDrops++;
+    if (text) this.explain(text);
+  }
+
+  /** Discards a packet this device meant to send out `port`: counts an output drop. */
+  dropOut(port, text) {
+    if (port) port.counters.outDrops++;
+    if (text) this.explain(text);
+  }
+
+  /** Zeroes the counters on every port, or on the given ones. */
+  clearCounters(ports = this.ports) {
+    for (const p of ports) p.clearCounters(this.now);
+    this.net?.emit('counters', this);
+  }
+
   saveConfig() { return {}; }
   loadConfig(_cfg) {}
 
