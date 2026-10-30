@@ -296,6 +296,15 @@ class DeviceWindow {
   tab_ports() {
     const d = this.d;
     this.counterSig = counterSignature(d);
+    // Built with DOM calls so device and port names can never be read as markup.
+    const third = d.type === 'switch' ? 'VLAN' : d.type === 'router' ? 'Address' : null;
+    const head = el('tr', {}, [
+      el('th', {}, 'Port'), el('th', {}, 'Status'), third && el('th', {}, third), el('th', {}, 'Connected to'),
+      el('th', { className: 'num', title: 'Frames received' }, 'In'),
+      el('th', { className: 'num', title: 'Frames sent' }, 'Out'),
+      el('th', { className: 'num', title: 'Frames dropped coming in / going out' }, 'Drops'),
+      el('th', {}, 'MAC'),
+    ]);
     const rows = d.ports.map((p) => {
       const peer = p.link ? `${p.peer.device.name} ${p.peer.name}` : '—';
       const st = p.shutdown ? 'admin down' : p.errDisabled ? 'err-disabled (port security)' : p.isUp() ? (d.stp && !d.stp.forwarding(p) ? 'blocking (STP)' : 'up') : p.link ? 'down' : 'not connected';
@@ -312,15 +321,33 @@ class DeviceWindow {
       const cls = st === 'up' ? 'status-good' : st.startsWith('blocking') ? '' : p.link ? 'status-bad' : '';
       const c = p.counters;
       const drops = c.inDrops + c.outDrops;
-      return `<tr><td>${p.name}</td><td class="${cls}">${st}</td>${d.type === 'hub' ? '' : `<td>${esc(extra)}</td>`}<td>${esc(peer)}</td><td class="num">${c.inPackets}</td><td class="num">${c.outPackets}</td><td class="num${drops ? ' status-bad' : ''}" title="${c.inDrops} in, ${c.outDrops} out">${c.inDrops} / ${c.outDrops}</td><td>${formatMac(p.mac)}</td></tr>`;
-    }).join('');
-    const third = d.type === 'hub' ? '' : `<th>${d.type === 'switch' ? 'VLAN' : 'Address'}</th>`;
-    this.body.innerHTML = `<div class="table-scroll"><table class="grid"><thead><tr><th>Port</th><th>Status</th>${third}<th>Connected to</th><th class="num" title="Frames received">In</th><th class="num" title="Frames sent">Out</th><th class="num" title="Frames dropped coming in / going out">Drops</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <div class="row-actions"><button class="btn" type="button" data-act="clear-counters">Clear counters</button></div>
-      ${d.type === 'hub' ? '<p class="note">A hub repeats every frame out of all its other ports, so it has no reason to drop anything.</p>' : '<p class="note">Drops count frames this device threw away on the port: spanning tree blocking, a VLAN the port does not carry, port security, an interface that is down, or an access list that denied the packet.</p>'}
-      ${d.type === 'switch' && d.ports.some((p) => p.errDisabled) ? '<p class="note">A port security violation put a port in the err-disabled state. In the CLI, enter <code>shutdown</code> and then <code>no shutdown</code> on that interface to bring it back.</p>' : ''}
-      ${d.type === 'router' ? '<p class="note">Router interfaces start shut down. In the CLI: <code>enable</code>, <code>configure terminal</code>, <code>interface g0/0</code>, <code>ip address …</code>, <code>no shutdown</code>.</p>' : ''}`;
-    this.body.querySelector('[data-act="clear-counters"]').onclick = () => d.clearCounters();
+      return el('tr', {}, [
+        el('td', {}, p.name), el('td', { className: cls }, st), third && el('td', {}, extra), el('td', {}, peer),
+        el('td', { className: 'num' }, String(c.inPackets)),
+        el('td', { className: 'num' }, String(c.outPackets)),
+        el('td', { className: drops ? 'num status-bad' : 'num', title: `${c.inDrops} in, ${c.outDrops} out` }, `${c.inDrops} / ${c.outDrops}`),
+        el('td', {}, formatMac(p.mac)),
+      ]);
+    });
+    const clear = el('button', { className: 'btn', type: 'button' }, 'Clear counters');
+    clear.dataset.act = 'clear-counters';
+    clear.onclick = () => d.clearCounters();
+    const note = (...parts) => el('p', { className: 'note' }, parts);
+    const code = (t) => el('code', {}, t);
+    const notes = [
+      d.type === 'hub'
+        ? note('A hub repeats every frame out of all its other ports, so it has no reason to drop anything.')
+        : note('Drops count frames this device accepted on the port and then threw away: spanning tree blocking, a VLAN the port does not carry, port security, an interface that is down, NAT, or an access list that denied the packet. Frames addressed to another device’s MAC address are ignored, not counted.'),
+      d.type === 'switch' && d.ports.some((p) => p.errDisabled)
+        && note('A port security violation put a port in the err-disabled state. In the CLI, enter ', code('shutdown'), ' and then ', code('no shutdown'), ' on that interface to bring it back.'),
+      d.type === 'router'
+        && note('Router interfaces start shut down. In the CLI: ', code('enable'), ', ', code('configure terminal'), ', ', code('interface g0/0'), ', ', code('ip address …'), ', ', code('no shutdown'), '.'),
+    ];
+    this.body.replaceChildren(
+      el('div', { className: 'table-scroll' }, [el('table', { className: 'grid' }, [el('thead', {}, [head]), el('tbody', {}, rows)])]),
+      el('div', { className: 'row-actions' }, [clear]),
+      ...notes.filter(Boolean),
+    );
   }
 
   tab_settings() {
@@ -350,6 +377,13 @@ class DeviceWindow {
     };
     this.body.querySelector('#del').onclick = () => this.app.removeDevice(d);
   }
+}
+
+/** Creates an element. `children` is a string (set as text) or a list of nodes and strings; falsy items are skipped. */
+function el(tag, props = {}, children = []) {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const c of [].concat(children)) if (c || c === '') n.append(c);
+  return n;
 }
 
 /** A cheap fingerprint of a device's port counters, so the Ports tab only redraws when they move. */

@@ -287,7 +287,7 @@ export class L3Device extends Device {
       return;
     }
     if (!this.forwarding) {
-      this.explain(`packet for ${pkt.dst} is not for me and I do not route, dropped`);
+      this.dropIn(iface.isSvi ? null : iface.port, `packet for ${pkt.dst} is not for me and I do not route, dropped`);
       return;
     }
     this.forward(iface, pkt);

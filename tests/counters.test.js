@@ -75,14 +75,19 @@ test('show interfaces prints the counters for physical interfaces', () => {
   assert.match(out, /\d+ packets output, \d+ broadcasts, 0 output drops/);
   // the switch's management SVI has no counters of its own
   t.run('conf t\nint vlan 1\nip add 192.168.1.2 255.255.255.0\nno shut\nend');
-  assert.doesNotMatch(t.run('show interfaces vlan1'), /packets input/);
+  const svi = t.run('show interfaces vlan1');
+  assert.match(svi, /^Vlan1 is up/m);
+  assert.doesNotMatch(svi, /packets input/);
 });
 
 test('router subinterfaces show no counters; the physical interface does', () => {
   const { r1 } = office();
   const t = ios(r1);
   t.run('en\nconf t\nint g0/2.10\nencapsulation dot1q 10\nip add 10.0.10.1 255.255.255.0\nend');
-  assert.doesNotMatch(t.run('show interfaces g0/2.10'), /packets input/);
+  const sub = t.run('show interfaces g0/2.10');
+  assert.match(sub, /^GigabitEthernet0\/2\.10 is /m);
+  assert.match(sub, /Encapsulation 802\.1Q/);
+  assert.doesNotMatch(sub, /packets input/);
   assert.match(t.run('show interfaces g0/2'), /0 packets input, 0 broadcasts, 0 input drops/);
 });
 
@@ -127,9 +132,12 @@ test('reload starts the counters from zero again', () => {
   const t = ios(sw);
   t.run('en\nclear counters');
   ping(net, a, '192.168.1.20');
+  const p = sw.getPort('FastEthernet0/1');
+  assert.ok(p.counters.inPackets > 0);
   t.run('reload');
-  assert.ok(sw.ports.every((p) => p.countersClearedAt === null));
-  assert.ok(sw.getPort('FastEthernet0/3').counters.inPackets === 0);
+  assert.ok(sw.ports.every((x) => x.countersClearedAt === null));
+  assert.ok(sw.ports.every(zero));
+  assert.match(t.run('en\nshow interfaces fa0/1'), /counters never[\s\S]* 0 packets input/);
 });
 
 test('an inbound access list deny counts as an input drop on that interface', () => {
@@ -199,11 +207,51 @@ test('a port security violation and a tagged frame on an access port count as in
   ping(net, rogue, '192.168.1.20');
   assert.ok(p.counters.inDrops > 0);
   assert.equal(p.counters.inDrops, p.counters.inPackets);
-  // a tagged frame on an access port is discarded too
-  const before = p.counters.inDrops;
-  net.transmit(rogue.getPort('FastEthernet0'), { src: '0000.0000.0001', dst: 'FFFF.FFFF.FFFF', type: 'ARP', vlan: 20, payload: {} });
+  // a tagged frame on a port without port security is discarded by the VLAN check alone
+  const tagger = createDevice(net, 'laptop', { name: 'Tagger' });
+  const p3 = sw.getPort('FastEthernet0/3');
+  net.connect(tagger.getPort('FastEthernet0'), p3);
+  net.settle(500);
+  net.recording = true;
+  net.transmit(tagger.getPort('FastEthernet0'), { src: '0000.0000.0001', dst: 'FFFF.FFFF.FFFF', type: 'ARP', vlan: 20, payload: {} });
   net.settle(100);
-  assert.equal(p.counters.inDrops, before + 1);
+  assert.equal(p3.counters.inDrops, 1);
+  assert.ok(net.events.at(-1).notes.some((n) => /tagged frame \(VLAN 20\) received on access port/.test(n)));
+});
+
+test('NAT that cannot translate a packet counts an output drop', () => {
+  const { net, r1, a } = office();
+  const isp = createDevice(net, 'pc', { name: 'ISP' });
+  net.connect(isp.getPort('FastEthernet0'), r1.getPort('GigabitEthernet0/2'));
+  const t = ios(r1);
+  // the outside interface is up but has no address to share
+  t.run(`en
+    conf t
+    access-list 1 permit 192.168.1.0 0.0.0.255
+    int g0/0
+    ip nat inside
+    int g0/2
+    ip nat outside
+    no shut
+    exit
+    ip route 0.0.0.0 0.0.0.0 g0/2
+    ip nat inside source list 1 interface g0/2 overload
+    end
+    clear counters`);
+  net.recording = true;
+  ping(net, a, '8.8.8.8');
+  assert.ok(net.events.flatMap((e) => e.notes).some((n) => /has no IP address to share/.test(n)));
+  assert.equal(r1.getPort('GigabitEthernet0/2').counters.outDrops, 4);
+});
+
+test('a host that receives a packet for another address counts an input drop', () => {
+  const { net, a, b } = office();
+  b.clearCounters();
+  // A sends an IP packet to B's MAC for an address B does not own
+  a.learnArp('192.168.1.99', b.getPort('FastEthernet0').mac, a.ifaces[0]);
+  a.sendIp({ dst: '192.168.1.99', proto: 'ICMP', payload: { type: 8, code: 0, id: 1, seq: 1 } });
+  net.settle(100);
+  assert.equal(b.getPort('FastEthernet0').counters.inDrops, 1);
 });
 
 test('a port blocked by spanning tree counts the frames it discards', () => {

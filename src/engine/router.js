@@ -71,7 +71,11 @@ export class Router extends L3Device {
     this.nat.discardCreated(); // the flow never left, so its new translation is not kept
     return false;
   }
-  translateOut(inIface, outIface, pkt) { return this.nat.translateOut(inIface, outIface, pkt); }
+  translateOut(inIface, outIface, pkt) {
+    if (this.nat.translateOut(inIface, outIface, pkt)) return true;
+    this.dropOut(outIface.port, `the packet counts as an output drop on ${outIface.port.name}`);
+    return false;
+  }
   answersArpFor(iface, ip) { return this.nat.ownsGlobal(iface, ip); }
 
   /** Outside → inside NAT happens after the inbound ACL and before routing. */
