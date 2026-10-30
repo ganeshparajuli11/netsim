@@ -223,12 +223,12 @@ export class L3Device extends Device {
 
   receive(port, frame) {
     const iface = this.ifaceForFrame(port, frame);
-    if (!iface) { this.explain(`dropped frame (no interface for VLAN tag ${frame.vlan ?? 'none'} on ${port.name})`); return; }
+    if (!iface) { this.dropIn(port, `dropped frame (no interface for VLAN tag ${frame.vlan ?? 'none'} on ${port.name})`); return; }
     this.receiveOnIface(iface, frame);
   }
 
   receiveOnIface(iface, frame) {
-    if (!this.ifaceUp(iface)) { this.explain(`${iface.name} is down, frame dropped`); return; }
+    if (!this.ifaceUp(iface)) { this.dropIn(iface.isSvi ? null : iface.port, `${iface.name} is down, frame dropped`); return; }
     if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !frame.dst.startsWith('0100.5E')) {
       this.explain(`destination MAC ${frame.dst} is not mine (${iface.mac}), frame dropped`);
       return;

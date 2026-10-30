@@ -53,6 +53,7 @@ class App {
       net.on('links', rerender),
       net.on('config', (d) => { rerender(); this.wins.refresh(d); this.autosave(); }),
       net.on('event', () => this.scheduleEvents()),
+      net.on('counters', (d) => this.wins.refresh(d)),
       net.on('log', ({ device, text }) => {
         const cli = this.clis.get(device);
         if (!cli) return;
@@ -117,6 +118,7 @@ class App {
       const c = document.getElementById('clock');
       const t = (this.net.time / 1000).toFixed(3);
       if (c.textContent !== `${t} s`) c.textContent = `${t} s`;
+      if (now - (this.lastCounterPoll || 0) > 500) { this.lastCounterPoll = now; this.wins.pollCounters(); }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);

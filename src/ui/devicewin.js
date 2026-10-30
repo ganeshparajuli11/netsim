@@ -32,6 +32,15 @@ export class WindowManager {
 
   closeAll() { for (const id of [...this.wins.keys()]) this.close(id); }
 
+  /** Redraws Ports tabs whose counters changed. Called a few times a second by the main loop. */
+  pollCounters() {
+    for (const w of this.wins.values()) {
+      if (w.tab !== 'ports') continue;
+      const sig = counterSignature(w.d);
+      if (sig !== w.counterSig) w.tab_ports();
+    }
+  }
+
   refresh(device) {
     const w = device ? this.wins.get(device.id) : null;
     if (w) w.refresh();
@@ -286,6 +295,7 @@ class DeviceWindow {
 
   tab_ports() {
     const d = this.d;
+    this.counterSig = counterSignature(d);
     const rows = d.ports.map((p) => {
       const peer = p.link ? `${p.peer.device.name} ${p.peer.name}` : '—';
       const st = p.shutdown ? 'admin down' : p.errDisabled ? 'err-disabled (port security)' : p.isUp() ? (d.stp && !d.stp.forwarding(p) ? 'blocking (STP)' : 'up') : p.link ? 'down' : 'not connected';
@@ -300,11 +310,17 @@ class DeviceWindow {
         extra = ifs.join(', ') || 'no IP';
       }
       const cls = st === 'up' ? 'status-good' : st.startsWith('blocking') ? '' : p.link ? 'status-bad' : '';
-      return `<tr><td>${p.name}</td><td class="${cls}">${st}</td><td>${esc(extra)}</td><td>${esc(peer)}</td><td>${formatMac(p.mac)}</td></tr>`;
+      const c = p.counters;
+      const drops = c.inDrops + c.outDrops;
+      return `<tr><td>${p.name}</td><td class="${cls}">${st}</td>${d.type === 'hub' ? '' : `<td>${esc(extra)}</td>`}<td>${esc(peer)}</td><td class="num">${c.inPackets}</td><td class="num">${c.outPackets}</td><td class="num${drops ? ' status-bad' : ''}" title="${c.inDrops} in, ${c.outDrops} out">${c.inDrops} / ${c.outDrops}</td><td>${formatMac(p.mac)}</td></tr>`;
     }).join('');
-    this.body.innerHTML = `<table class="grid"><thead><tr><th>Port</th><th>Status</th><th>${d.type === 'switch' ? 'VLAN' : d.type === 'router' ? 'Address' : ''}</th><th>Connected to</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table>
+    const third = d.type === 'hub' ? '' : `<th>${d.type === 'switch' ? 'VLAN' : 'Address'}</th>`;
+    this.body.innerHTML = `<div class="table-scroll"><table class="grid"><thead><tr><th>Port</th><th>Status</th>${third}<th>Connected to</th><th class="num" title="Frames received">In</th><th class="num" title="Frames sent">Out</th><th class="num" title="Frames dropped coming in / going out">Drops</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="row-actions"><button class="btn" type="button" data-act="clear-counters">Clear counters</button></div>
+      ${d.type === 'hub' ? '<p class="note">A hub repeats every frame out of all its other ports, so it has no reason to drop anything.</p>' : '<p class="note">Drops count frames this device threw away on the port: spanning tree blocking, a VLAN the port does not carry, port security, an interface that is down, or an access list that denied the packet.</p>'}
       ${d.type === 'switch' && d.ports.some((p) => p.errDisabled) ? '<p class="note">A port security violation put a port in the err-disabled state. In the CLI, enter <code>shutdown</code> and then <code>no shutdown</code> on that interface to bring it back.</p>' : ''}
       ${d.type === 'router' ? '<p class="note">Router interfaces start shut down. In the CLI: <code>enable</code>, <code>configure terminal</code>, <code>interface g0/0</code>, <code>ip address …</code>, <code>no shutdown</code>.</p>' : ''}`;
+    this.body.querySelector('[data-act="clear-counters"]').onclick = () => d.clearCounters();
   }
 
   tab_settings() {
@@ -334,4 +350,9 @@ class DeviceWindow {
     };
     this.body.querySelector('#del').onclick = () => this.app.removeDevice(d);
   }
+}
+
+/** A cheap fingerprint of a device's port counters, so the Ports tab only redraws when they move. */
+function counterSignature(d) {
+  return d.ports.map((p) => { const c = p.counters; return `${c.inPackets},${c.outPackets},${c.inDrops},${c.outDrops}`; }).join(';');
 }

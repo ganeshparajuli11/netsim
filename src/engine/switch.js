@@ -54,22 +54,22 @@ export class Switch extends L3Device {
 
   // ---------- data plane ----------
   receive(port, frame) {
-    if (port.errDisabled) { this.explain(`${port.name} is err-disabled, frame discarded`); return; }
+    if (port.errDisabled) { this.dropIn(port, `${port.name} is err-disabled, frame discarded`); return; }
     if (frame.type === 'STP') { this.stp.receive(port, frame.payload); return; }
-    if (!this.stp.forwarding(port)) { this.explain(`${port.name} is ${this.stp.state(port)} (spanning tree), frame discarded`); return; }
+    if (!this.stp.forwarding(port)) { this.dropIn(port, `${port.name} is ${this.stp.state(port)} (spanning tree), frame discarded`); return; }
     let vlan;
     if (port.sw.mode === 'trunk') {
       vlan = frame.vlan ?? port.sw.nativeVlan;
-      if (!this.carries(port, vlan)) { this.explain(`VLAN ${vlan} not allowed on trunk ${port.name}, dropped`); return; }
+      if (!this.carries(port, vlan)) { this.dropIn(port, `VLAN ${vlan} not allowed on trunk ${port.name}, dropped`); return; }
     } else {
       if (frame.vlan !== undefined && frame.vlan !== null) {
-        this.explain(`tagged frame (VLAN ${frame.vlan}) received on access port ${port.name}, dropped`);
+        this.dropIn(port, `tagged frame (VLAN ${frame.vlan}) received on access port ${port.name}, dropped`);
         return;
       }
       vlan = port.sw.accessVlan;
     }
-    if (!this.vlans.has(vlan)) { this.explain(`VLAN ${vlan} does not exist on this switch, frame dropped`); return; }
-    if (!checkPortSecurity(this, port, frame, vlan)) return;
+    if (!this.vlans.has(vlan)) { this.dropIn(port, `VLAN ${vlan} does not exist on this switch, frame dropped`); return; }
+    if (!checkPortSecurity(this, port, frame, vlan)) { this.dropIn(port); return; }
     if (frame.src !== BROADCAST_MAC) {
       const k = `${vlan}|${frame.src}`;
       const prev = this.macTable.get(k);

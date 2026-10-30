@@ -2,6 +2,16 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.9.0 (2026-10-30)
+
+- Interface counters. Every port counts the frames it receives and sends, the broadcasts among them, and the frames the device dropped coming in or going out.
+- Input drops are frames a device threw away on arrival: a port blocked by spanning tree, an err-disabled port, a VLAN the port does not carry, a tagged frame on an access port, a port security violation, a router interface that is down or has no subinterface for the tag, or an inbound access list deny. Output drops are packets an outbound access list denied. The packet inspector says when a denied packet is counted as a drop.
+- `show interfaces` prints the counters and when they were last cleared for each physical interface. Subinterfaces and SVIs share their port's counters, so they don't print their own.
+- New command: `clear counters` (all interfaces) and `clear counters <if>` in privileged mode. `reload` starts the counters from zero too.
+- The Ports tab shows In, Out and Drops (in / out) columns that update as traffic flows, plus a Clear counters button. The table scrolls sideways on narrow screens.
+- The `?` help for `counters` now just says "Clear counters", since the word is used by more than one command.
+- Counters are runtime state and are not saved; saved files are unchanged.
+
 ## 0.8.0 (2026-10-29)
 
 - Switch port security. `switchport port-security` on an access port limits which source MAC addresses it accepts. `switchport port-security maximum <n>` sets how many (1 to 132, default 1).

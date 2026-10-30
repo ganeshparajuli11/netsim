@@ -35,6 +35,17 @@ function uptime(ms) {
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }
 
+/** The counter lines of `show interfaces` for one physical port. */
+export function counterLines(port, now) {
+  const c = port.counters;
+  const cleared = port.countersClearedAt === null ? 'never' : uptime(now - port.countersClearedAt);
+  return [
+    `  Last clearing of "show interface" counters ${cleared}`,
+    `     ${c.inPackets} packets input, ${c.inBroadcasts} broadcasts, ${c.inDrops} input drops`,
+    `     ${c.outPackets} packets output, ${c.outBroadcasts} broadcasts, ${c.outDrops} output drops`,
+  ];
+}
+
 function classful(ip) {
   const f = ipToInt(ip) >>> 24;
   if (f < 128) return { net: networkOf(ip, '255.0.0.0'), prefix: 8 };
@@ -115,7 +126,7 @@ C.describe({
   permit: 'Specify packets to forward',
   deny: 'Specify packets to reject',
   remark: 'Access list entry comment',
-  counters: 'Clear access list match counters',
+  counters: 'Clear counters',
   'port-security': 'Secure the port by limiting the MAC addresses it accepts',
   maximum: 'Maximum number of secure addresses',
   violation: 'What to do when a frame breaks the port security rules',
@@ -171,6 +182,20 @@ C.add('priv', ['clear ip ospf process', 'clear ip ospf <n> process'], function (
   this.print(pid !== undefined ? `Reset OSPF process ${pid}? [no]: yes\n` : 'Reset ALL OSPF processes? [no]: yes\n');
   this.d.ospf.restart();
 });
+C.add('priv', ['clear counters', 'clear counters <if>'], function ([n]) {
+  const d = this.d;
+  if (n === undefined) {
+    this.print('Clear "show interface" counters on all interfaces [confirm]\n');
+    d.clearCounters();
+    d.syslog?.('%CLEAR-5-COUNTERS: Clear counter on all interfaces by console');
+    return;
+  }
+  const port = d.getPort(n) || d.getIface?.(n)?.port;
+  if (!port) { this.print('% Invalid interface\n'); return; }
+  this.print(`Clear "show interface" counters on this interface [confirm]\n`);
+  d.clearCounters([port]);
+  d.syslog?.(`%CLEAR-5-COUNTERS: Clear counter on interface ${port.name} by console`);
+}, 'Clear interface counters');
 C.add('priv', ['clear ip nat translation *'], function () { this.need('router') && this.d.nat.clear(); });
 C.add('priv', ['clear ip nat statistics'], function () { if (this.need('router')) { this.d.nat.hits = 0; this.d.nat.misses = 0; } });
 C.add('priv', ['clear access-list counters', 'clear access-list counters <word>', 'clear ip access-list counters', 'clear ip access-list counters <word>'], function ([name]) {
@@ -948,6 +973,7 @@ export class IosCli {
     d.resetConfig?.();
     if (cfg) d.loadConfig(cfg);
     d.startupConfig = startup;
+    for (const p of d.ports) p.clearCounters(null); // a restart starts the counters from zero
     for (const p of d.ports) d.net.notifyPort(p);
     this.mode = 'user';
     this.ctx = {};
@@ -1065,6 +1091,8 @@ Configuration register is 0x2102
       if (i.ip) lines.push(`  Internet address is ${i.ip}/${maskToPrefix(i.mask)}`);
       if (i.parent) lines.push(`  Encapsulation 802.1Q Virtual LAN, Vlan ID  ${i.vlan ?? 'not set'}${i.nativeVlan ? ' (native)' : ''}`);
       else lines.push(`  MTU 1500 bytes, BW ${d.type === 'router' ? bandwidthKbps(i) : /^Gig/.test(i.name) ? '1000000' : '100000'} Kbit, DLY 10 usec`);
+      // Counters belong to the physical port; subinterfaces and SVIs share it or have none.
+      if (i.port && !i.parent && !i.isSvi) lines.push(...counterLines(i.port, d.now));
       lines.push('');
     }
     this.print(lines.join('\n') + '\n');
