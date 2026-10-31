@@ -59,13 +59,15 @@ export class Terminal {
     const cli = this.cli;
     if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault();
-      if (cli.busy) cli.cancel(); else this.write(`${cli.prompt()}${this.input.value}^C\n`);
+      if (cli.busy) cli.cancel();
+      else { this.write(`${cli.prompt()}${this.input.value}^C\n`); cli.abortDialog?.(); }
       this.input.value = '';
       this.showInput();
       return;
     }
     if (e.key === 'z' && e.ctrlKey) {
       e.preventDefault();
+      if (cli.dialog) { this.write(`${cli.prompt()}${this.input.value}^Z\n`); cli.abortDialog(); this.input.value = ''; this.showInput(); return; }
       if (cli.mode && cli.mode !== 'user' && cli.mode !== 'priv') { this.write(`${cli.prompt()}^Z\n`); cli.exec('end'); }
       this.showInput();
       return;
@@ -82,11 +84,12 @@ export class Terminal {
     }
     if (e.key === 'Tab') {
       e.preventDefault();
+      if (cli.dialog) return;
       const r = cli.complete?.(this.input.value);
       if (r) this.input.value = r;
       return;
     }
-    if (e.key === '?' && cli.help) {
+    if (e.key === '?' && cli.help && !cli.dialog) {
       e.preventDefault();
       const v = this.input.value;
       this.write(`${cli.prompt()}${v}?\n${cli.help(v)}\n`);

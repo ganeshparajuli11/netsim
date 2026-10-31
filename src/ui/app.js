@@ -7,6 +7,7 @@ import { IosCli } from '../cli/ios.js';
 import { HostCmd } from '../cli/hostcmd.js';
 import { formatMac, maskToPrefix } from '../engine/util.js';
 import { describeLsa } from '../engine/ospf.js';
+import { ipLength } from '../engine/l3.js';
 import { Canvas, shortPort, firstIp } from './canvas.js';
 import { WindowManager } from './devicewin.js';
 import { iconSvg, PROTO_COLORS } from './icons.js';
@@ -584,11 +585,11 @@ class App {
       layers.push(['ARP', 'layer 2.5', kv({ Operation: a.op === 1 ? '1 (request)' : '2 (reply)', 'Sender MAC': formatMac(a.senderMac), 'Sender IP': a.senderIp, 'Target MAC': formatMac(a.targetMac), 'Target IP': a.targetIp })]);
     } else if (f.type === 'IPv4') {
       const ip = f.payload;
-      layers.push(['IPv4', 'layer 3', kv({ Source: ip.src, Destination: ip.dst, TTL: ip.ttl, Protocol: ip.proto, Identification: ip.ident })]);
+      layers.push(['IPv4', 'layer 3', kv({ Source: ip.src, Destination: ip.dst, TTL: ip.ttl, Protocol: ip.proto, Identification: ip.ident, 'Total length': ip.proto === 'ICMP' && Number.isFinite(ip.payload?.size) ? `${ipLength(ip)} bytes` : undefined, "Don't fragment": ip.df ? 'set' : undefined })]);
       const p = ip.payload;
       if (ip.proto === 'ICMP') {
         const names = { 0: 'Echo reply', 8: 'Echo request', 3: 'Destination unreachable', 11: 'Time exceeded' };
-        layers.push(['ICMP', 'layer 3', kv({ Type: `${p.type} (${names[p.type] || '?'})`, Code: p.code, Identifier: p.id ?? p.orig?.icmp?.id, Sequence: p.seq ?? p.orig?.icmp?.seq, 'About packet': p.orig ? `${p.orig.src} → ${p.orig.dst}` : undefined })]);
+        layers.push(['ICMP', 'layer 3', kv({ Type: `${p.type} (${names[p.type] || '?'})`, Code: p.type === 3 && p.code === 4 ? '4 (fragmentation needed and DF set)' : p.code, 'Next-hop MTU': p.mtu, 'Data size': Number.isFinite(p.size) ? `${p.size} bytes` : undefined, Identifier: p.id ?? p.orig?.icmp?.id, Sequence: p.seq ?? p.orig?.icmp?.seq, 'About packet': p.orig ? `${p.orig.src} → ${p.orig.dst}` : undefined })]);
       } else if (ip.proto === 'UDP') {
         layers.push(['UDP', 'layer 4', kv({ 'Source port': p.srcPort, 'Destination port': p.dstPort })]);
         const m = p.payload;

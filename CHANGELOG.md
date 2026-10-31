@@ -2,6 +2,16 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.10.0 (2026-10-31)
+
+- Extended ping on routers. Type `ping` on its own in privileged mode and the router asks for the protocol, target address, repeat count, datagram size, timeout and whether you want extended commands; extended commands add the source address or interface and the Don't Fragment (DF) bit. Press Enter to keep the default shown in brackets. A bad answer stops the dialogue with a message, and Ctrl+C or Ctrl+Z leaves it.
+- One-line router ping takes `repeat <n>`, `size <36-18024>`, `source <address|interface>`, `timeout <seconds>` and `df-bit` in any order, for example `ping 10.2.0.10 size 1500 df-bit repeat 3`. `?` lists the options that are left. The source must be one of the router's own addresses or interfaces.
+- PC ping takes `-l <size>` (bytes of data, 0-65500), `-f` (set the DF bit), `-i <TTL>` and `-w <timeout in ms>`. Replies show the real byte count, and bad values say which option is wrong.
+- Packet size now matters. Every Ethernet interface has a 1500-byte MTU. A bigger packet with the DF bit set can't be sent: the sending device reports it (`M` on a router, "Packet needs to be fragmented but DF set." on a PC), and a router that would have to forward it drops it and sends ICMP "fragmentation needed" (type 3, code 4) with the MTU back to the sender (RFC 1191). Without the DF bit the packet inspector explains that the packet would be split into fragments; the simulator still carries it as one packet. Echo replies keep the size and DF bit of the request.
+- The packet inspector shows the total length and DF bit of echo packets, the data size of ICMP echoes, and the next-hop MTU in "fragmentation needed" messages.
+- CLI: commands can describe their own keywords for `?` help.
+- Saved files are unchanged.
+
 ## 0.9.0 (2026-10-30)
 
 - Interface counters. Every port counts the frames it receives and sends, the broadcasts among them, and the frames the device dropped coming in or going out.

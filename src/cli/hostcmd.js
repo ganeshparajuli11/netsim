@@ -4,7 +4,8 @@ import { formatMac, isValidIp } from '../engine/util.js';
 
 const HELP = `Available commands:
   ipconfig [/all | /release | /renew]   Show or change IP settings
-  ping [-n count] <host>                 Test reachability (ICMP echo)
+  ping [-n count] [-l size] [-f] [-i TTL] [-w timeout] [-t] <host>
+                                         Test reachability (ICMP echo)
   tracert <host>                         Show the routers on the path
   arp -a | arp -d                        Show or clear the ARP cache
   nslookup <name>                        Ask the DNS server for an address
@@ -98,24 +99,46 @@ export class HostCmd {
 
   ping(args) {
     let count = 4;
+    let size = 32;
+    let df = false;
+    let ttl = null;
+    let timeout = 1000;
     let host = null;
+    const usage = 'Usage: ping [-t] [-n count] [-l size] [-f] [-i TTL] [-w timeout] <host>\n';
+    const number = (flag, lo, hi) => {
+      const v = args[flag.i + 1];
+      if (v === undefined || !/^\d+$/.test(v) || Number(v) < lo || Number(v) > hi) {
+        this.print(v === undefined ? `Value must be supplied for option ${flag.name}.\n` : `Bad value for option ${flag.name}, valid range is from ${lo} to ${hi}.\n`);
+        return null;
+      }
+      return Number(v);
+    };
     for (let i = 0; i < args.length; i++) {
-      if (args[i] === '-n' && args[i + 1]) { count = Math.max(1, Math.min(100, Number(args[++i]) || 4)); }
-      else if (args[i] === '-t') count = 1000;
+      const a = args[i].toLowerCase();
+      const flag = { i, name: a };
+      if (a === '-n') { if ((count = number(flag, 1, 100)) === null) return; i++; }
+      else if (a === '-l') { if ((size = number(flag, 0, 65500)) === null) return; i++; }
+      else if (a === '-i') { if ((ttl = number(flag, 1, 255)) === null) return; i++; }
+      else if (a === '-w') { if ((timeout = number(flag, 1, 60000)) === null) return; i++; }
+      else if (a === '-f') df = true;
+      else if (a === '-t') count = 1000;
+      else if (a.startsWith('-')) { this.print(`Bad option ${args[i]}.\n\n${usage}`); return; }
       else host = args[i];
     }
-    if (!host) { this.print('Usage: ping [-n count] [-t] <host>\n'); return; }
+    if (!host) { this.print(usage); return; }
     const d = this.d;
     this.busy = { cancel: () => {} };
     d.resolveName(host, (ip) => {
       if (!ip) { this.busy = null; this.print(`Ping request could not find host ${host}. Please check the name and try again.\n`); this.onBusyDone?.(); return; }
-      this.print(`\nPinging ${ip} with 32 bytes of data:\n\n`);
+      this.print(`\nPinging ${ip} with ${size} bytes of data:\n\n`);
       const h = d.ping(ip, {
-        count, timeout: 1000, interval: 1000, size: 32,
+        count, timeout, interval: 1000, size, df, ttl,
         onResult: (r) => {
-          if (r.kind === 'reply') this.print(`Reply from ${ip}: bytes=32 time${r.rtt < 1 ? '<1' : '='}${r.rtt}ms TTL=${r.ttl}\n`);
+          if (r.kind === 'reply') this.print(`Reply from ${ip}: bytes=${r.size ?? size} time${r.rtt < 1 ? '<1' : '='}${r.rtt}ms TTL=${r.ttl}\n`);
           else if (r.kind === 'timeout') this.print('Request timed out.\n');
           else if (r.kind === 'ttl') this.print(`Reply from ${r.from}: TTL expired in transit.\n`);
+          else if (r.kind === 'too-big') this.print('Packet needs to be fragmented but DF set.\n');
+          else if (r.kind === 'unreachable' && r.code === 4) this.print(`Reply from ${r.from}: Packet needs to be fragmented but DF set.\n`);
           else if (r.kind === 'unreachable') this.print(`Reply from ${r.from}: Destination host unreachable.\n`);
           else this.print('PING: transmit failed. General failure.\n');
         },

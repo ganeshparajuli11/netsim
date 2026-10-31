@@ -9,6 +9,20 @@ import {
 export const AD = { C: 0, L: 0, S: 1, R: 120, O: 110 };
 const ARP_TIMEOUT = 2000;
 const ARP_AGE = 4 * 60 * 60 * 1000;
+/** Largest IP packet an Ethernet interface carries without fragmenting it (RFC 894). */
+export const IP_MTU = 1500;
+const IP_HEADER = 20;
+const ICMP_HEADER = 8;
+
+/**
+ * Total length of an IP packet in bytes, as far as the simulator models it. Echo messages carry
+ * `size` bytes of data; other packets are small and are counted as headers only.
+ */
+export function ipLength(pkt) {
+  const p = pkt.payload || {};
+  if (pkt.proto === 'ICMP') return IP_HEADER + ICMP_HEADER + (Number.isFinite(p.size) ? p.size : 0);
+  return IP_HEADER;
+}
 
 export class L3Device extends Device {
   constructor(type, name) {
@@ -147,6 +161,7 @@ export class L3Device extends Device {
       const iface = opts.iface;
       if (!this.ifaceUp(iface)) return 'down';
       if (!pkt.src) pkt.src = iface.ip || '0.0.0.0';
+      if (!this.fitsMtu(iface, pkt)) return 'too-big';
       if (pkt.dst === '255.255.255.255' || opts.broadcast) {
         this.sendFrame(iface, BROADCAST_MAC, 'IPv4', pkt);
         return 'ok';
@@ -164,6 +179,7 @@ export class L3Device extends Device {
     const r = this.lookup(pkt.dst);
     if (!r) return 'no-route';
     if (!pkt.src) pkt.src = r.iface.ip;
+    if (!this.fitsMtu(r.iface, pkt)) return 'too-big';
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);
       return 'ok';
@@ -333,11 +349,37 @@ export class L3Device extends Device {
     const before = original || { ...pkt, payload: { ...pkt.payload } };
     if (!this.translateOut(inIface, r.iface, pkt)) return;
     if (!this.filterOut(r.iface, pkt, before)) return;
+    if (!this.fitsMtu(r.iface, pkt, before)) return;
     if (r.iface.ip && r.iface.mask && pkt.dst === broadcastOf(r.iface.ip, r.iface.mask)) {
       this.sendFrame(r.iface, BROADCAST_MAC, 'IPv4', pkt);
       return;
     }
     this.resolveAndSend(r.iface, r.nextHop, pkt);
+  }
+
+  /**
+   * Checks a packet against the egress interface MTU before it is sent. A packet with the
+   * Don't Fragment bit set that is too big is dropped (RFC 791); a router tells the sender with
+   * ICMP "fragmentation needed" (RFC 1191). Without the DF bit the packet would be split into
+   * fragments; the simulator explains that and carries it whole. `original` is the header as the
+   * sender built it, for the ICMP error, when this router is forwarding.
+   */
+  fitsMtu(iface, pkt, original = undefined) {
+    const len = ipLength(pkt);
+    if (len <= IP_MTU) return true;
+    if (pkt.df) {
+      if (original === undefined) {
+        this.explain(`this ${len}-byte packet is larger than the ${IP_MTU}-byte MTU of ${iface.name} and has the Don't Fragment bit set, so it can't be sent`);
+      } else {
+        this.explain(`this ${len}-byte packet is larger than the ${IP_MTU}-byte MTU of ${iface.name} and has the Don't Fragment bit set; dropping it and sending ICMP "fragmentation needed" to ${pkt.src}`);
+        this.sendIcmpError(original || pkt, 3, 4, { mtu: IP_MTU });
+      }
+      return false;
+    }
+    const perFragment = Math.floor((IP_MTU - IP_HEADER) / 8) * 8;
+    const pieces = Math.ceil((len - IP_HEADER) / perFragment);
+    this.explain(`this ${len}-byte packet is larger than the ${IP_MTU}-byte MTU of ${iface.name}, so it would be split into ${pieces} fragments; the simulator carries it as one packet and the receiver would put the fragments back together`);
+    return true;
   }
 
   deliverLocal(iface, pkt, _frame) {
@@ -360,10 +402,12 @@ export class L3Device extends Device {
     if (m.type === 8) {
       if (pkt.dst === '255.255.255.255') return;
       this.explain(`ICMP echo request from ${pkt.src}; sending echo reply`);
-      this.sendIp({
+      const reply = {
         src: this.ownsIp(pkt.dst) ? pkt.dst : iface.ip, dst: pkt.src, proto: 'ICMP',
         payload: { type: 0, code: 0, id: m.id, seq: m.seq, size: m.size },
-      });
+      };
+      if (pkt.df) reply.df = true; // the reply keeps the request's Don't Fragment bit
+      this.sendIp(reply);
       return;
     }
     let key = null;
@@ -378,7 +422,7 @@ export class L3Device extends Device {
     }
   }
 
-  sendIcmpError(orig, type, code) {
+  sendIcmpError(orig, type, code, extra = {}) {
     if (orig.proto === 'ICMP' && orig.payload.type !== 8 && orig.payload.type !== 0) return; // never error about errors
     if (orig.src === '0.0.0.0') return;
     const r = this.lookup(orig.src);
@@ -386,7 +430,7 @@ export class L3Device extends Device {
     this.sendIp({
       src: r.iface.ip, dst: orig.src, proto: 'ICMP',
       payload: {
-        type, code,
+        type, code, ...extra,
         orig: {
           src: orig.src, dst: orig.dst, proto: orig.proto,
           icmp: orig.proto === 'ICMP' ? { type: orig.payload.type, id: orig.payload.id, seq: orig.payload.seq } : null,
@@ -399,9 +443,10 @@ export class L3Device extends Device {
 
   /**
    * Generic echo client used by ping and traceroute.
-   * onResult({kind:'reply'|'timeout'|'ttl'|'unreachable'|'no-route', from, rtt, ttl, seq})
+   * onResult({kind:'reply'|'timeout'|'ttl'|'unreachable'|'no-route'|'too-big', from, rtt, ttl, seq, code, mtu}).
+   * size is the echo data in bytes; df sets the Don't Fragment bit.
    */
-  ping(dst, { count = 4, timeout = 1000, interval = 1000, ttl = null, size = 32, src = null, onResult = () => {}, onDone = () => {} } = {}) {
+  ping(dst, { count = 4, timeout = 1000, interval = 1000, ttl = null, size = 32, src = null, df = false, onResult = () => {}, onDone = () => {} } = {}) {
     const id = (this.icmpId++) & 0xffff;
     let seq = 0;
     let cancelled = false;
@@ -431,15 +476,16 @@ export class L3Device extends Device {
         const rtt = this.now - sentAt;
         if (m.type === 0) finish({ kind: 'reply', from: pkt.src, rtt, ttl: pkt.ttl, size: m.size });
         else if (m.type === 11) finish({ kind: 'ttl', from: pkt.src, rtt });
-        else finish({ kind: 'unreachable', from: pkt.src, rtt, code: m.code });
+        else finish({ kind: 'unreachable', from: pkt.src, rtt, code: m.code, mtu: m.mtu });
       });
       stats.sent++;
       const pkt = { dst, proto: 'ICMP', payload: { type: 8, code: 0, id, seq: mySeq, size } };
       if (ttl) pkt.ttl = ttl;
       if (src) pkt.src = src;
+      if (df) pkt.df = true;
       const res = this.sendIp(pkt);
       if (res !== 'ok') {
-        this.net.schedule(0, () => finish({ kind: 'no-route' }));
+        this.net.schedule(0, () => finish({ kind: res === 'too-big' ? 'too-big' : 'no-route' }));
         return;
       }
       timer = this.net.schedule(timeout, () => finish({ kind: 'timeout' }));

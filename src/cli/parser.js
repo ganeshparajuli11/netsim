@@ -109,8 +109,9 @@ export function matchSyntax(syntax, tokens) {
 export class CommandSet {
   constructor() { this.defs = []; this.keywordHelp = {}; }
 
-  add(modes, syntaxes, run, help = '') {
-    for (const syntax of [].concat(syntaxes)) this.defs.push({ modes: [].concat(modes), syntax, run, help });
+  /** `words` optionally describes keywords for this command only, for `?` help. */
+  add(modes, syntaxes, run, help = '', words = null) {
+    for (const syntax of [].concat(syntaxes)) this.defs.push({ modes: [].concat(modes), syntax, run, help, words });
     return this;
   }
 
@@ -169,7 +170,7 @@ export class CommandSet {
         for (const w of String(m.next).split('|')) {
           if (!w.toLowerCase().startsWith(partial.toLowerCase()) && !w.startsWith('<')) continue;
           if (w.startsWith('<') && partial) continue;
-          const help = w.startsWith('<') ? PLACEHOLDER_HELP[w] || w : this.keywordHelp[w] || (def.syntax.split(' ').length === tokens.length + 1 ? def.help : '');
+          const help = w.startsWith('<') ? PLACEHOLDER_HELP[w] || w : def.words?.[w] || this.keywordHelp[w] || (def.syntax.split(' ').length === tokens.length + 1 ? def.help : '');
           if (!out.has(w)) out.set(w, help || '');
         }
       } else if (m.status === 'ok' && !partial) {

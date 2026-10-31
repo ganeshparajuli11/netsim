@@ -165,7 +165,35 @@ C.add(CONFIG_MODES, 'exit', function () {
 });
 
 // ---------- exec ----------
-C.add(EXEC, ['ping <word>', 'ping <word> repeat <n>', 'ping <word> source <word>'], function ([host, x]) { this.cmdPing(host, typeof x === 'number' ? x : 5, typeof x === 'string' ? x : null); }, 'Send echo messages');
+// ping <host> [repeat n] [size n] [source addr|if] [timeout s] [df-bit], options in any order
+const PING_OPTS = [
+  { key: 'repeat', syntax: 'repeat <n>' },
+  { key: 'size', syntax: 'size <n>' },
+  { key: 'source', syntax: 'source <word>' },
+  { key: 'timeout', syntax: 'timeout <n>' },
+  { key: 'df', syntax: 'df-bit' },
+];
+const PING_WORDS = {
+  repeat: 'Number of echo messages to send',
+  size: 'Datagram size in bytes (36-18024)',
+  source: 'Source address or interface',
+  timeout: 'Seconds to wait for each reply',
+  'df-bit': "Set the Don't Fragment bit in the IP header",
+};
+function pingOrders(left, chosen, out) {
+  out.push(chosen);
+  for (const o of left) pingOrders(left.filter((x) => x !== o), [...chosen, o], out);
+  return out;
+}
+for (const order of pingOrders(PING_OPTS, [], [])) {
+  const syntax = ['ping <word>', ...order.map((o) => o.syntax)].join(' ');
+  C.add(EXEC, syntax, function ([host, ...vals]) {
+    const opts = {};
+    for (const o of order) opts[o.key] = o.key === 'df' ? true : vals.shift();
+    this.cmdPing(host, opts);
+  }, 'Send echo messages', PING_WORDS);
+}
+C.add('priv', 'ping', function () { this.startPingDialog(); }, 'Send echo messages');
 C.add(EXEC, ['traceroute <word>'], function ([host]) { this.cmdTrace(host); });
 C.add('priv', ['copy running-config startup-config', 'write memory', 'write'], function () { this.saveStartup(); });
 C.add('priv', ['erase startup-config', 'write erase'], function () {
@@ -565,6 +593,18 @@ C.add(CONFIG_MODES, ['do <line>'], function ([rest]) {
 
 export const IOS_COMMANDS = C;
 
+const PING_LIMITS = { repeat: 2147483647, minSize: 36, maxSize: 18024, timeout: 3600 };
+
+/** One character per echo, as the router prints them: ! reply, . timeout, U unreachable,
+ * M could not fragment, & TTL expired. */
+function pingChar(r) {
+  if (r.kind === 'reply') return '!';
+  if (r.kind === 'too-big') return 'M';
+  if (r.kind === 'unreachable') return r.code === 4 ? 'M' : 'U';
+  if (r.kind === 'ttl') return '&';
+  return '.';
+}
+
 // ------------------------------------------------------------------------------------------
 
 export class IosCli {
@@ -575,6 +615,7 @@ export class IosCli {
     this.history = [];
     this.busy = null;
     this.awaitPassword = null;
+    this.dialog = null; // a question-and-answer command such as extended ping
     this.out = () => {};
     this.configuredBy = false;
   }
@@ -583,6 +624,7 @@ export class IosCli {
 
   prompt() {
     if (this.awaitPassword) return '';
+    if (this.dialog) return this.dialog.steps[this.dialog.i].q;
     const h = this.d.hostname;
     switch (this.mode) {
       case 'user': return `${h}>`;
@@ -618,6 +660,7 @@ export class IosCli {
       this.print('Password: ');
       return;
     }
+    if (this.dialog) { this.answerDialog(line); return; }
     if (/\?$/.test(line)) {
       this.print(`${this.help(line.slice(0, -1))}\n`);
       return;
@@ -983,20 +1026,29 @@ export class IosCli {
 
   // ---------------- ping / traceroute ----------------
 
-  cmdPing(host, count, source) {
+  /**
+   * Runs a ping from the router. opts: repeat (count), size (datagram bytes), source (address or
+   * interface), timeout (seconds), df (Don't Fragment bit).
+   */
+  cmdPing(host, opts = {}) {
     if (!isValidIp(host)) { this.print('% Unrecognized host or address, or protocol not running.\n\n'); return; }
+    const count = opts.repeat ?? 5;
+    const size = opts.size ?? 100;
+    const timeout = opts.timeout ?? 2;
+    if (!Number.isInteger(count) || count < 1 || count > PING_LIMITS.repeat) { this.print(`% A decimal number between 1 and ${PING_LIMITS.repeat}.\n`); return; }
+    if (!Number.isInteger(size) || size < PING_LIMITS.minSize || size > PING_LIMITS.maxSize) { this.print(`% A decimal number between ${PING_LIMITS.minSize} and ${PING_LIMITS.maxSize}.\n`); return; }
+    if (!Number.isInteger(timeout) || timeout < 0 || timeout > PING_LIMITS.timeout) { this.print(`% A decimal number between 0 and ${PING_LIMITS.timeout}.\n`); return; }
     let src = null;
-    if (source) {
-      const name = parseIfName(source);
-      const i = name && this.d.getIface(name);
-      src = i ? i.ip : isValidIp(source) ? source : null;
+    if (opts.source) {
+      src = this.pingSource(opts.source);
       if (!src) { this.print('% Invalid source address\n'); return; }
     }
-    this.print(`Type escape sequence to abort.\nSending ${count}, 100-byte ICMP Echos to ${host}, timeout is 2 seconds:\n`);
-    if (src) this.print(`Packet sent with a source address of ${src}\n`);
+    this.print(`Type escape sequence to abort.\nSending ${count}, ${size}-byte ICMP Echos to ${host}, timeout is ${timeout} seconds:\n`);
+    if (src) this.print(`Packet sent with a source address of ${src}${opts.df ? ' and the DF bit set' : ''}\n`);
+    else if (opts.df) this.print('Packet sent with the DF bit set\n');
     this.busy = this.d.ping(host, {
-      count, timeout: 2000, interval: 0, size: 100, src,
-      onResult: (r) => this.print(r.kind === 'reply' ? '!' : r.kind === 'unreachable' ? 'U' : r.kind === 'ttl' ? '&' : '.'),
+      count, timeout: timeout * 1000, interval: 0, size: size - 28, src, df: !!opts.df,
+      onResult: (r) => this.print(pingChar(r)),
       onDone: (s) => {
         this.busy = null;
         const pct = Math.round((s.received / s.sent) * 100);
@@ -1011,6 +1063,70 @@ export class IosCli {
       },
     });
   }
+
+  /** A source given as an interface name (its address) or as one of this router's addresses. */
+  pingSource(text) {
+    const name = parseIfName(text);
+    const i = name && this.d.getIface(name);
+    if (i) return i.ip || null;
+    return isValidIp(text) && this.d.ifaces.some((x) => x.ip === text) ? text : null;
+  }
+
+  /** Extended ping: `ping` on its own asks for each setting in turn. */
+  startPingDialog() {
+    const v = { protocol: 'ip', target: null, repeat: 5, size: 100, timeout: 2, extended: false, source: null, df: false };
+    const num = (key, lo, hi) => (a) => {
+      if (a === '') return true;
+      if (!/^\d+$/.test(a) || Number(a) < lo || Number(a) > hi) return `% A decimal number between ${lo} and ${hi}.`;
+      v[key] = Number(a);
+      return true;
+    };
+    const yesNo = (key) => (a) => {
+      if (a === '') return true;
+      if (/^y(es?)?$/i.test(a)) v[key] = true;
+      else if (/^no?$/i.test(a)) v[key] = false;
+      else return '% Please answer \'yes\' or \'no\'.';
+      return true;
+    };
+    const steps = [
+      { q: 'Protocol [ip]: ', answer: (a) => (a === '' || 'ip'.startsWith(a.toLowerCase()) ? true : `% Unknown protocol "${a}". Only ip is supported.`) },
+      { q: 'Target IP address: ', answer: (a) => { if (!isValidIp(a)) return '% Bad IP address'; v.target = a; return true; } },
+      { q: 'Repeat count [5]: ', answer: num('repeat', 1, PING_LIMITS.repeat) },
+      { q: 'Datagram size [100]: ', answer: num('size', PING_LIMITS.minSize, PING_LIMITS.maxSize) },
+      { q: 'Timeout in seconds [2]: ', answer: num('timeout', 0, PING_LIMITS.timeout) },
+      { q: 'Extended commands [n]: ', answer: yesNo('extended') },
+      {
+        q: 'Source address or interface: ',
+        when: () => v.extended,
+        answer: (a) => {
+          if (a === '') return true;
+          const src = this.pingSource(a);
+          if (!src) return '% Invalid source address or interface';
+          v.source = src;
+          return true;
+        },
+      },
+      { q: 'Set DF bit in IP header? [no]: ', when: () => v.extended, answer: yesNo('df') },
+    ];
+    this.dialog = {
+      steps, i: 0,
+      done: () => this.cmdPing(v.target, { repeat: v.repeat, size: v.size, timeout: v.timeout, source: v.source, df: v.df }),
+    };
+  }
+
+  /** Feeds one answer to the running dialog. A bad answer ends it, as on the real CLI. */
+  answerDialog(line) {
+    const dlg = this.dialog;
+    const step = dlg.steps[dlg.i];
+    const res = step.answer(line.trim());
+    if (res !== true) { this.dialog = null; this.print(`${res}\n`); return; }
+    dlg.i++;
+    while (dlg.i < dlg.steps.length && dlg.steps[dlg.i].when && !dlg.steps[dlg.i].when()) dlg.i++;
+    if (dlg.i >= dlg.steps.length) { this.dialog = null; dlg.done(); }
+  }
+
+  /** Ctrl+C or Ctrl+Z while a dialog is asking questions. */
+  abortDialog() { this.dialog = null; }
 
   cmdTrace(host) {
     if (!isValidIp(host)) { this.print('% Unrecognized host or address, or protocol not running.\n\n'); return; }
