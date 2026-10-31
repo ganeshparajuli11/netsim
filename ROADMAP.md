@@ -6,7 +6,6 @@ Each item should fit in one focused pull request. Split anything bigger before s
 
 ## Backlog
 
-- [ ] Extended `ping` dialogue on routers (repeat, size, source, timeout) and `ping` with `-l` size on PCs
 - [ ] Telnet from a PC to a router or switch: `line vty 0 4`, `password`, `login`, then a remote CLI in the PC command prompt
 - [ ] Undo and redo for workspace edits (add/move/delete device, add/remove cable), Ctrl+Z / Ctrl+Shift+Z
 - [ ] Text notes on the workspace: add, edit, move and delete sticky notes saved with the topology
@@ -26,6 +25,7 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [ ] Translations framework (UI strings in one file) with one extra language
 - [ ] EtherChannel (static `channel-group <n> mode on`) with spanning tree treating the bundle as one link
 - [ ] Syslog server and NTP client/server services
+- [ ] `ip mtu <n>` on router interfaces, so the DF bit and "fragmentation needed" can be shown with normal ping sizes
 
 ## Done
 
@@ -41,3 +41,4 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [x] Named ACLs: `ip access-list standard|extended NAME` with numbered sequence lines and `no <seq>`, lab "Edit a named access list"
 - [x] Switch port security: `switchport port-security`, `maximum`, `mac-address sticky`, `violation shutdown|restrict|protect`, err-disabled state with a red light, `show port-security`
 - [x] Interface counters: packets in/out and drops per interface, shown in `show interfaces` and the Ports tab, `clear counters`
+- [x] Extended `ping` dialogue on routers (repeat, size, source, timeout) and `ping` with `-l` size on PCs
