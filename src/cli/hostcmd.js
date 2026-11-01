@@ -1,12 +1,14 @@
 // Command prompt for end devices (PC, laptop, server).
 
 import { formatMac, isValidIp } from '../engine/util.js';
+import { openTelnet, TELNET_PORT } from '../engine/telnet.js';
 
 const HELP = `Available commands:
   ipconfig [/all | /release | /renew]   Show or change IP settings
   ping [-n count] [-l size] [-f] [-i TTL] [-w timeout] [-t] <host>
                                          Test reachability (ICMP echo)
   tracert <host>                         Show the routers on the path
+  telnet <host> [port]                   Open a remote command line on a router or switch
   arp -a | arp -d                        Show or clear the ARP cache
   nslookup <name>                        Ask the DNS server for an address
   netstat -r | route print               Show this host's routing decisions
@@ -21,24 +23,33 @@ export class HostCmd {
     this.busy = null;
     this.out = () => {};
     this.history = [];
+    this.remote = null; // the open Telnet session, if any
   }
 
   print(t) { this.out(t); }
-  prompt() { return 'C:\\>'; }
+  prompt() { return this.remote ? this.remote.prompt : 'C:\\>'; }
+  /** True while the remote device is asking for a password, so the terminal hides typing. */
+  get awaitPassword() { return !!this.remote && !this.remote.echo; }
+  /** The remote CLI mode, so Ctrl+Z can leave configuration mode on the remote device. */
+  get mode() { return this.remote?.mode; }
   banner() { return 'OpenNetSim Command Line 1.0\nType "help" for a list of commands.\n\n'; }
 
   cancel() {
-    if (this.busy) { this.busy.cancel(); this.busy = null; this.print('^C\n'); }
+    if (!this.busy) return;
+    if (this.busy.remote) { this.busy.cancel(); return; } // the remote device answers when it has stopped
+    this.busy.cancel(); this.busy = null; this.print('^C\n');
   }
 
   complete(line) {
-    const cmds = ['ipconfig', 'ping', 'tracert', 'arp', 'nslookup', 'netstat', 'route', 'hostname', 'cls', 'help'];
+    if (this.remote) return null;
+    const cmds = ['ipconfig', 'ping', 'tracert', 'telnet', 'arp', 'nslookup', 'netstat', 'route', 'hostname', 'cls', 'help'];
     const m = cmds.filter((c) => c.startsWith(line.trim().toLowerCase()));
     return m.length === 1 && !line.includes(' ') ? `${m[0]} ` : null;
   }
 
   exec(line) {
     if (this.busy) return;
+    if (this.remote) { this.sendRemote(line); return; }
     const t = line.trim().split(/\s+/).filter(Boolean);
     if (!t.length) return;
     this.history.push(line);
@@ -50,6 +61,7 @@ export class HostCmd {
       case 'ipconfig': this.ipconfig(args); break;
       case 'ping': this.ping(args); break;
       case 'tracert': case 'traceroute': this.tracert(args); break;
+      case 'telnet': this.telnet(args); break;
       case 'arp': this.arp(args); break;
       case 'nslookup': this.nslookup(args); break;
       case 'netstat': case 'route': this.routes(); break;
@@ -177,6 +189,66 @@ export class HostCmd {
         onDone: () => { this.busy = null; this.print('\nTrace complete.\n\n'); this.onBusyDone?.(); },
       });
     });
+  }
+
+  telnet(args) {
+    const host = args[0];
+    if (!host) { this.print('Usage: telnet <host> [port]\n'); return; }
+    let port = TELNET_PORT;
+    if (args[1] !== undefined) {
+      if (!/^\d+$/.test(args[1]) || Number(args[1]) < 1 || Number(args[1]) > 65535) { this.print('Bad port number. Use a number from 1 to 65535.\n'); return; }
+      port = Number(args[1]);
+    }
+    const d = this.d;
+    this.busy = { cancel: () => {} };
+    const done = () => { this.busy = null; this.onBusyDone?.(); };
+    d.resolveName(host, (ip) => {
+      if (!ip) { this.print(`Could not find host ${host}. Please check the name and try again.\n`); done(); return; }
+      this.print(`Trying ${ip}${port === TELNET_PORT ? '' : ` port ${port}`} ...`);
+      let session = null;
+      session = openTelnet(d, ip, port, {
+        onOpen: () => {
+          this.print('Open\n');
+          this.remote = { ip, session, prompt: '', echo: true, mode: undefined };
+          this.busy = { remote: true, cancel: () => session.brk() };
+        },
+        onData: (p) => {
+          if (p.text) this.print(p.text);
+          if (!p.ready || !this.remote) return;
+          Object.assign(this.remote, { prompt: p.prompt || '', echo: p.echo !== false, mode: p.mode });
+          done();
+        },
+        onClose: (why) => {
+          this.remote = null;
+          this.print(why === 'lost' ? `\n\nConnection to ${ip} lost: the device stopped answering.\n\n`
+            : why === 'reset' ? `\n\n[Connection to ${ip} was reset]\n\n`
+            : `\n[Connection to ${ip} closed by foreign host]\n`);
+          done();
+        },
+        onFail: (why) => {
+          this.print(why === 'refused' ? '\n% Connection refused by remote host\n\n'
+            : why === 'no-route' ? '\n% No route to host\n\n'
+            : '\n% Connection timed out; remote host not responding\n\n');
+          done();
+        },
+      });
+      if (session.state === 'syn-sent') this.busy = { cancel: () => session.abort() };
+    });
+  }
+
+  /** Ctrl+C at a question from the remote device (such as extended ping) stops the dialogue there. */
+  abortDialog() {
+    if (!this.remote || this.busy) return;
+    const { session } = this.remote;
+    this.busy = { remote: true, cancel: () => {} };
+    session.brk();
+  }
+
+  sendRemote(line) {
+    if (this.remote.echo && line.trim()) this.history.push(line);
+    const { session } = this.remote;
+    this.busy = { remote: true, cancel: () => session.brk() };
+    session.send(line, { secret: !this.remote.echo });
   }
 
   arp(args) {

@@ -10,6 +10,7 @@ import {
 import { addrToString, aclKey, numberedType, ruleText } from '../engine/acl.js';
 import { bandwidthKbps } from '../engine/ospf.js';
 import { parseMac, portSecurityStatus, PSEC_MAX } from '../engine/portsec.js';
+import { setVtyCliFactory, VTY_MAX_LINE } from '../engine/telnet.js';
 
 const CONFIG_MODES = ['config', 'config-if', 'config-subif', 'config-if-range', 'config-vlan', 'dhcp-config', 'config-router', 'config-line', 'config-std-nacl', 'config-ext-nacl'];
 const NACL_MODES = ['config-std-nacl', 'config-ext-nacl'];
@@ -134,10 +135,23 @@ C.describe({
   sticky: 'Learn secure addresses and keep them in the running configuration',
   protect: 'Drop frames from addresses that are not secure',
   restrict: 'Drop, count and log frames from addresses that are not secure',
+  login: 'Ask for a password when someone connects to this line',
+  transport: 'Which protocols can connect to this line',
+  input: 'Protocols allowed to connect',
+  users: 'Who is connected to this device',
+  telnet: 'Allow Telnet connections',
+  ssh: 'Allow SSH connections',
+  all: 'Allow every protocol',
+  none: 'Allow no remote connections',
 });
 
 // ---------- mode navigation ----------
 C.add('user', 'enable', function () {
+  if (this.vty && !this.d.enableSecret && !this.d.enablePassword) {
+    // Remote users can only reach privileged mode when an enable password protects it.
+    this.print('% No password set\n');
+    return;
+  }
   if (this.d.enableSecret || this.d.enablePassword) {
     this.awaitPassword = { tries: 0 };
     this.print('Password: ');
@@ -147,6 +161,7 @@ C.add('user', 'enable', function () {
 });
 C.add('priv', 'disable', function () { this.mode = 'user'; });
 C.add(EXEC, ['exit', 'logout'], function () {
+  if (this.vty) { this.vty.logout(); return; }
   this.mode = 'user';
   this.print(`\n${this.d.hostname} con0 is now available\n\nPress RETURN to get started.\n`);
 });
@@ -234,6 +249,7 @@ C.add('priv', ['clear access-list counters', 'clear access-list counters <word>'
 });
 C.add(EXEC, ['terminal length <n>', 'terminal monitor', 'terminal no monitor'], function () {});
 C.add(EXEC, ['show version'], function () { this.showVersion(); });
+C.add(EXEC, ['show users'], function () { this.showUsers(); });
 C.add(EXEC, ['show history'], function () { this.print(this.history.slice(-10).map((h) => `  ${h}`).join('\n') + '\n'); });
 C.add(EXEC, ['show clock'], function () {
   const t = new Date(Date.UTC(2026, 0, 1) + this.d.now);
@@ -379,7 +395,12 @@ C.add('config', ['no ip nat inside source static <ip> <ip>'], function ([local, 
   this.changed();
 });
 C.add('config', ['no access-list <n>'], function ([n]) { if (this.need('router')) { this.d.acl.remove(n); this.changed(); } });
-C.add('config', ['line con <n>', 'line console <n>', 'line vty <n> <n>', 'line aux <n>'], function () { this.mode = 'config-line'; });
+C.add('config', ['line con <n>', 'line console <n>', 'line aux <n>'], function () { this.mode = 'config-line'; this.ctx = { line: 'con' }; });
+C.add('config', ['line vty <n>', 'line vty <n> <n>'], function ([first, last = first]) {
+  if (first > VTY_MAX_LINE || last > VTY_MAX_LINE || last < first) { this.print(`% Vty lines are numbered 0 to ${VTY_MAX_LINE}, first line first\n`); return; }
+  this.mode = 'config-line';
+  this.ctx = { line: 'vty' };
+});
 C.add('config', ['spanning-tree vlan <n> priority <n>'], function ([, p]) {
   if (!this.need('switch')) return;
   if (p % 4096) { this.print('% Bridge Priority must be in increments of 4096.\n% Allowed values are:\n0     4096  8192  12288 16384 20480 24576 28672\n32768 36864 40960 45056 49152 53248 57344 61440\n'); return; }
@@ -396,7 +417,23 @@ C.add('config', ['service password-encryption', 'no service password-encryption'
 C.add('config', ['no ip routing'], function () { this.print('% Disabling IP routing is not supported in this simulator\n'); });
 
 // ---------- line ----------
-C.add('config-line', ['password <word>', 'login', 'login local', 'no login', 'exec-timeout <n> <n>', 'logging synchronous', 'transport input <word>'], function () {});
+C.add('config-line', ['exec-timeout <n> <n>', 'logging synchronous', 'no logging synchronous'], function () {});
+// Console and aux settings are accepted but not enforced; vty settings control Telnet.
+C.add('config-line', ['password <word>'], function ([p]) { if (this.ctx.line === 'vty') { this.d.vty.password = String(p); this.changed(); } });
+C.add('config-line', ['no password'], function () { if (this.ctx.line === 'vty') { this.d.vty.password = null; this.changed(); } });
+C.add('config-line', ['login'], function () { if (this.ctx.line === 'vty') { this.d.vty.login = true; this.changed(); } });
+C.add('config-line', ['no login'], function () { if (this.ctx.line === 'vty') { this.d.vty.login = false; this.changed(); } });
+C.add('config-line', ['login local'], function () {
+  if (this.ctx.line === 'vty') this.print('% This simulator has no user accounts yet. Use "password <word>" and "login" instead\n');
+});
+C.add('config-line', ['transport input telnet|ssh|all|none', 'transport input telnet ssh', 'transport input ssh telnet'], function () {
+  if (this.ctx.line !== 'vty') return;
+  const words = this.lastLine.trim().split(/\s+/).slice(2).map((w) => w.toLowerCase());
+  const pick = (w) => ['telnet', 'ssh', 'all', 'none'].find((x) => x.startsWith(w));
+  const chosen = words.map(pick);
+  this.d.vty.transport = chosen.length === 2 ? 'telnet ssh' : chosen[0];
+  this.changed();
+});
 
 // ---------- interface ----------
 C.add(IF_MODES, ['ip address <ip> <mask>'], function ([ip, mask]) { this.eachIface((i) => this.setIp(i, ip, mask)); });
@@ -593,6 +630,8 @@ C.add(CONFIG_MODES, ['do <line>'], function ([rest]) {
 
 export const IOS_COMMANDS = C;
 
+setVtyCliFactory((dev) => new IosCli(dev));
+
 const PING_LIMITS = { repeat: 2147483647, minSize: 36, maxSize: 18024, timeout: 3600 };
 
 /** One character per echo, as the router prints them: ! reply, . timeout, U unreachable,
@@ -729,7 +768,8 @@ export class IosCli {
   }
 
   syslogConfigured() {
-    this.print(`%SYS-5-CONFIG_I: Configured from console by console\n`);
+    const by = this.vty ? `vty${this.vty.line} (${this.vty.peer})` : 'console';
+    this.print(`%SYS-5-CONFIG_I: Configured from console by ${by}\n`);
   }
 
   // ---------------- helpers used by commands ----------------
@@ -1013,6 +1053,7 @@ export class IosCli {
     this.print('Proceed with reload? [confirm]\n');
     const cfg = d.startupConfig ? d.startupConfig.cfg : null;
     const startup = d.startupConfig;
+    d.telnet?.closeAll('\n% The device is reloading\n');
     d.resetConfig?.();
     if (cfg) d.loadConfig(cfg);
     d.startupConfig = startup;
@@ -1127,6 +1168,17 @@ export class IosCli {
 
   /** Ctrl+C or Ctrl+Z while a dialog is asking questions. */
   abortDialog() { this.dialog = null; }
+
+  showUsers() {
+    const rows = ['    Line       Location           Mode'];
+    const mark = (me) => (me ? '*' : ' ');
+    const modeOf = (cli) => (cli ? (cli.mode === 'user' ? 'user EXEC' : cli.mode === 'priv' ? 'privileged EXEC' : 'configuration') : 'login');
+    rows.push(`${mark(!this.vty)}   con 0      console            ${this.vty ? '' : modeOf(this)}`.trimEnd());
+    for (const s of this.d.telnet?.list() || []) {
+      rows.push(`${mark(this.vty === s)}   vty ${String(s.line).padEnd(7)}${s.peer.padEnd(19)}${s.state === 'exec' ? modeOf(s.cli) : 'login'}`);
+    }
+    this.print(`${rows.join('\n')}\n\n`);
+  }
 
   cmdTrace(host) {
     if (!isValidIp(host)) { this.print('% Unrecognized host or address, or protocol not running.\n\n'); return; }
@@ -1721,7 +1773,14 @@ ${o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`).join('\n')}$
       if (d.defaultGateway) L.push(`ip default-gateway ${d.defaultGateway}`, '!');
     }
     if (d.banner) L.push(`banner motd ^C${d.banner}^C`, '!');
-    L.push('!', 'line con 0', '!', 'line aux 0', '!', 'line vty 0 4', ' login', '!', '!', 'end');
+    const v = d.vty;
+    L.push('!', 'line con 0', '!', 'line aux 0', '!', 'line vty 0 4');
+    if (v) {
+      if (v.password) L.push(` password ${v.password}`);
+      L.push(v.login ? ' login' : ' no login');
+      if (v.transport !== 'all') L.push(` transport input ${v.transport}`);
+    } else L.push(' login');
+    L.push('!', '!', 'end');
     return L.join('\n') + '\n';
   }
 }

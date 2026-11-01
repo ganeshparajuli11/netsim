@@ -2,6 +2,17 @@
 
 Newest first. One entry per merged pull request.
 
+## 0.11.0 (2026-11-01)
+
+- Telnet. Type `telnet <address>` in a PC command prompt to get the command line of a router or switch in the same window. The prompt changes to the remote device's prompt, `?` help and Ctrl+Z work there, Ctrl+C stops a remote ping, and `exit` or `logout` closes the session ("[Connection to … closed by foreign host]"). `telnet <address> <port>` tries another port.
+- Vty lines. `line vty 0 4` (any range from 0 to 15) takes `password <word>`, `no password`, `login`, `no login` and `transport input telnet|ssh|all|none` (or `telnet ssh`). As on real devices, the lines ask for a password by default, so a device with no vty password says "Password required, but none set" and hangs up. Three wrong passwords end the session with "% Bad passwords". Up to five sessions can be open at once. Console and aux line settings are still accepted but not enforced.
+- Over Telnet, `enable` needs an enable secret or password ("% No password set" otherwise), and leaving configuration mode logs "Configured from console by vty0 (address)".
+- New command: `show users` lists the console and every Telnet session, with its address and mode. `show running-config` prints the vty settings. `reload` ends Telnet sessions.
+- The connection is real TCP traffic in the simulation: SYN, SYN-ACK and ACK to open it, data segments with sequence and acknowledgement numbers, FIN to close it and RST when nothing listens on the port, `transport input` doesn't allow Telnet or all five lines are busy. A SYN that gets no answer is sent again after 1 and 3 seconds; after 5 seconds the PC reports "% Connection timed out". Extended access lists can match it with `eq 23`.
+- The packet inspector shows TCP flags and sequence numbers and a Telnet layer with the typed line or the output. Passwords appear in plain text there, with a note that Telnet does not encrypt anything. Telnet has its own colour and filter in simulation mode.
+- Hosts answer a TCP connection request on a port with no service with a reset.
+- Saved files keep the vty settings. Files saved by older versions open with the defaults (login on, no password, all transports).
+
 ## 0.10.0 (2026-10-31)
 
 - Extended ping on routers. Type `ping` on its own in privileged mode and the router asks for the protocol, target address, repeat count, datagram size, timeout and whether you want extended commands; extended commands add the source address or interface and the Don't Fragment (DF) bit. Press Enter to keep the default shown in brackets. A bad answer stops the dialogue with a message, and Ctrl+C or Ctrl+Z leaves it.

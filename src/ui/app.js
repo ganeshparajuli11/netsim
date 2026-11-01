@@ -18,7 +18,7 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
 };
-const PROTOCOLS = ['ARP', 'ICMP', 'DHCP', 'DNS', 'HTTP', 'RIP', 'OSPF', 'UDP'];
+const PROTOCOLS = ['ARP', 'ICMP', 'DHCP', 'DNS', 'HTTP', 'Telnet', 'RIP', 'OSPF', 'UDP'];
 
 class App {
   constructor() {
@@ -613,8 +613,19 @@ class App {
         }
         layers.push(['OSPF', 'layer 3, IP protocol 89', kv(ospfFields)]);
       } else if (ip.proto === 'TCP') {
-        layers.push(['TCP', 'layer 4', kv({ 'Source port': p.srcPort, 'Destination port': p.dstPort })]);
-        layers.push(['HTTP', 'layer 7', kv(p.payload.method ? { Request: `${p.payload.method} ${p.payload.path}`, Host: p.payload.host } : { Status: p.payload.status, Body: `${(p.payload.body || '').length} bytes` })]);
+        const flagNames = { SYN: 'SYN (open a connection)', 'SYN-ACK': 'SYN, ACK (accept the connection)', ACK: 'ACK', 'PSH-ACK': 'PSH, ACK (data)', FIN: 'FIN (close the connection)', 'FIN-ACK': 'FIN, ACK (close acknowledged)', RST: 'RST (refuse or reset)' };
+        layers.push(['TCP', 'layer 4', kv({ 'Source port': p.srcPort, 'Destination port': p.dstPort, Flags: p.flags ? flagNames[p.flags] || p.flags : undefined, 'Sequence number': p.seq, 'Acknowledgement number': p.flags && p.flags !== 'SYN' ? p.ack : undefined })]);
+        const m = p.payload;
+        if (p.dstPort === 23 || p.srcPort === 23) {
+          if (m) {
+            const shown = (t) => (t.length > 120 ? `${t.slice(0, 120)}…` : t);
+            layers.push(['Telnet', 'layer 7', kv(m.line !== undefined ? { 'Typed line': m.line === '' ? '(Enter)' : m.line, Note: m.secret ? 'This is a password. Telnet does not encrypt anything, so anyone who captures this packet can read it.' : undefined }
+              : m.brk ? { Keys: 'Ctrl+C (interrupt)' }
+              : { Output: m.text ? shown(m.text) : '(none)', Prompt: m.ready ? m.prompt || '(none)' : undefined, 'Hide typing': m.echo === false ? 'yes (password)' : undefined })]);
+          }
+        } else if (m) {
+          layers.push(['HTTP', 'layer 7', kv(m.method ? { Request: `${m.method} ${m.path}`, Host: m.host } : { Status: m.status, Body: `${(m.body || '').length} bytes` })]);
+        }
       }
     }
     const back = document.createElement('div');

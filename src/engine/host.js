@@ -108,7 +108,11 @@ export class Host extends L3Device {
       return;
     }
     const h = this.udpHandlers.get(`tcp:${seg.dstPort}`);
-    if (h) h(pkt);
+    if (h) { h(pkt); return; }
+    if (seg.flags === 'SYN') {
+      this.explain(`TCP: nothing listens on port ${seg.dstPort} on this host, so it answers with a reset (RST)`);
+      this.sendIp({ src: pkt.dst, dst: pkt.src, proto: 'TCP', payload: { srcPort: seg.dstPort, dstPort: seg.srcPort, flags: 'RST', seq: 0, ack: (seg.seq || 0) + 1 } });
+    }
   }
 
   httpGet(target, cb) {
