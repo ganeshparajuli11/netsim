@@ -281,3 +281,78 @@ test('Ctrl+C at a remote extended ping question ends the dialogue', () => {
   assert.equal(c.cli.prompt(), 'R1#');
   assert.equal(c.cli.busy, null);
 });
+
+test('a handshake that never completes gives its vty line back', () => {
+  const { net, r1, admin } = lab();
+  vty(r1, 'no login');
+  // five SYNs whose senders never finish the handshake
+  for (let i = 0; i < VTY_LINES; i++) {
+    admin.sendIp({ dst: '10.1.0.1', proto: 'TCP', payload: { srcPort: 40000 + i, dstPort: 23, flags: 'SYN', seq: 1 } });
+  }
+  net.runFor(100);
+  assert.equal(r1.telnet.sessions.size, VTY_LINES);
+  net.settle(20000);
+  assert.equal(r1.telnet.sessions.size, 0);
+  assert.match(cmd(admin).run('telnet 10.1.0.1', net), /Open/);
+});
+
+test('Ctrl+C at the login password prompt closes the session', () => {
+  const { net, r1, admin } = lab();
+  vty(r1, 'password class\nlogin');
+  const c = cmd(admin);
+  c.run('telnet 10.1.0.1', net);
+  assert.equal(c.cli.awaitPassword, true);
+  c.cli.abortDialog();
+  net.settle(5000);
+  assert.equal(c.cli.remote, null);
+  assert.equal(c.cli.busy, null);
+  assert.equal(r1.telnet.sessions.size, 0);
+});
+
+test('a long, quiet remote command keeps the session alive; a dead link is detected', () => {
+  const { net, r1, admin } = lab();
+  vty(r1, 'no login');
+  const c = cmd(admin);
+  c.run('telnet 10.1.0.1', net);
+  c.cli.exec('ping 10.1.0.99 repeat 1 timeout 60');
+  net.runFor(45000);
+  assert.ok(c.cli.remote, 'still connected after 45 s of silence from the ping');
+  net.settle(60000);
+  assert.equal(c.cli.busy, null);
+  assert.equal(c.cli.prompt(), 'R1>');
+
+  // the router stops answering: after 30 s the PC gives up
+  const p = r1.getPort('GigabitEthernet0/0');
+  c.cli.exec('show version');
+  p.shutdown = true;
+  net.notifyPort(p);
+  net.settle(60000);
+  assert.equal(c.cli.remote, null);
+  assert.match(c.cli.prompt(), /C:\\>/);
+});
+
+test('cancelling while the name is looked up does not open a session later', () => {
+  const { net, r1, admin, b } = lab();
+  vty(r1, 'no login');
+  b.setStatic({ ip: '10.2.0.10', mask: '255.255.255.0', gateway: '10.2.0.1' });
+  b.dns = { enabled: true, records: [{ name: 'r1.lab', ip: '10.1.0.1' }] };
+  admin.setStatic({ ip: '10.1.0.10', mask: '255.255.255.0', gateway: '10.1.0.1', dns: '10.2.0.10' });
+  const c = cmd(admin);
+  c.cli.exec('telnet r1.lab');
+  c.cli.cancel();
+  net.settle(10000);
+  assert.equal(c.cli.remote, null);
+  assert.equal(r1.telnet.sessions.size, 0);
+  assert.match(c.run('telnet r1.lab', net), /Trying 10\.1\.0\.1 \.\.\.Open/);
+});
+
+test('web requests and port-80 connection attempts to a router are refused cleanly', () => {
+  const { net, admin } = lab();
+  net.recording = true;
+  let res = null;
+  admin.httpGet('10.1.0.1', (r) => { res = r; });
+  net.settle(5000);
+  assert.match(res.error, /refused/);
+  assert.match(cmd(admin).run('telnet 10.1.0.1 80', net), /% Connection refused/);
+  assert.ok(net.events.some((e) => e.protocol === 'TCP' && /SYN$/.test(e.summary)));
+});

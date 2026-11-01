@@ -124,7 +124,11 @@ export class Host extends L3Device {
       const port = this.nextEphemeral++;
       let done = false;
       const finish = (r) => { if (done) return; done = true; this.udpHandlers.delete(`tcp:${port}`); cb(r); };
-      this.udpHandlers.set(`tcp:${port}`, (pkt) => finish({ status: pkt.payload.payload.status, body: pkt.payload.payload.body, ip }));
+      this.udpHandlers.set(`tcp:${port}`, (pkt) => {
+        const m = pkt.payload.payload;
+        if (pkt.payload.flags === 'RST' || !m) { finish({ error: `${ip} refused the connection` }); return; }
+        finish({ status: m.status, body: m.body, ip });
+      });
       const r = this.sendIp({ dst: ip, proto: 'TCP', payload: { srcPort: port, dstPort: 80, payload: { method: 'GET', path, host } } });
       if (r !== 'ok') { finish({ error: 'Request timed out' }); return; }
       this.net.schedule(3000, () => finish({ error: 'Request timed out' }));

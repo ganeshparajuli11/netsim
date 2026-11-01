@@ -282,7 +282,7 @@ export function protocolOf(frame) {
     }
     if (ip.proto === 'TCP') {
       const t = ip.payload;
-      if (t.dstPort === 80 || t.srcPort === 80) return 'HTTP';
+      if ((t.dstPort === 80 || t.srcPort === 80) && t.payload && !t.flags) return 'HTTP';
       if (t.dstPort === 23 || t.srcPort === 23) return 'Telnet';
       return 'TCP';
     }

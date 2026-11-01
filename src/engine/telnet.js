@@ -13,6 +13,8 @@ export const VTY_MAX_LINE = 15;
 const SYN_RETRIES = [1000, 2000];   // a SYN is resent after 1 s and again 2 s later
 const CONNECT_GIVE_UP = 5000;       // then the client gives up
 const SILENCE_LIMIT = 30000;        // a client waiting this long for any answer drops the session
+const HANDSHAKE_LIMIT = 10000;      // a half-open connection gives its vty line back after this
+const KEEPALIVE = 10000;            // while a remote command runs quietly, the server says it is still there
 export const TRANSPORTS = ['all', 'telnet', 'ssh', 'none', 'telnet ssh'];
 
 export function defaultVty() { return { login: true, password: null, transport: 'all' }; }
@@ -73,6 +75,9 @@ export class TelnetServer {
       }
       const ns = new VtySession(this, { peer: pkt.src, peerPort: seg.srcPort, local: pkt.dst, line, isn: seg.seq });
       this.sessions.set(key, ns);
+      d.net?.schedule(HANDSHAKE_LIMIT, () => {
+        if (ns.state === 'syn-rcvd' && this.sessions.get(key) === ns) this.sessions.delete(key);
+      });
       d.explain(`Telnet: connection request (SYN) from ${pkt.src} port ${seg.srcPort}; vty ${line} is free, so ${d.hostname} answers with SYN-ACK`);
       ns.sendSynAck();
       return;
@@ -228,11 +233,25 @@ class VtySession {
     cli.exec(line);
     if (this.state !== 'exec') return; // the command ended the session
     this.flush(!cli.busy);
+    if (cli.busy) this.keepAlive();
+  }
+
+  /** An empty ACK every few seconds tells the client a long, quiet command is still running. */
+  keepAlive() {
+    this.d.net?.schedule(KEEPALIVE, () => {
+      if (this.state !== 'exec' || !this.cli.busy) return;
+      this.send('ACK');
+      this.keepAlive();
+    });
   }
 
   interrupt() {
     const cli = this.cli;
-    if (!cli) return;
+    if (!cli) {
+      this.d.explain('Telnet: the user pressed Ctrl+C at the password prompt; closing the session');
+      this.close('\n');
+      return;
+    }
     this.d.explain('Telnet: the user pressed Ctrl+C');
     if (cli.busy) cli.cancel();
     else if (cli.dialog) { this.write('^C\n'); cli.abortDialog(); }
@@ -358,6 +377,7 @@ export function openTelnet(host, ip, port, handlers) {
       if (c.state !== 'open' || c.waitingSince === null) return;
       const quiet = host.net.time - c.lastHeard;
       if (quiet < SILENCE_LIMIT) { arm(); return; }
+      send('RST'); // tell the server, in case it can still hear us, so it frees the line
       finish();
       handlers.onClose?.('lost');
     });
@@ -380,7 +400,13 @@ export function openTelnet(host, ip, port, handlers) {
     send('PSH-ACK', secret ? { line, secret: true } : { line });
     arm();
   };
-  c.brk = () => { if (c.state === 'open') send('PSH-ACK', { brk: true }); };
+  c.brk = () => {
+    if (c.state !== 'open') return;
+    c.waitingSince = host.net.time;
+    c.lastHeard = host.net.time;
+    send('PSH-ACK', { brk: true });
+    arm();
+  };
   c.abort = () => {
     if (c.state === 'syn-sent') { finish(); return; }
     if (c.state === 'open') { send('FIN'); finish(); }

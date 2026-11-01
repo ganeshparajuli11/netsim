@@ -9,6 +9,8 @@ Newest first. One entry per merged pull request.
 - Over Telnet, `enable` needs an enable secret or password ("% No password set" otherwise), and leaving configuration mode logs "Configured from console by vty0 (address)".
 - New command: `show users` lists the console and every Telnet session, with its address and mode. `show running-config` prints the vty settings. `reload` ends Telnet sessions.
 - The connection is real TCP traffic in the simulation: SYN, SYN-ACK and ACK to open it, data segments with sequence and acknowledgement numbers, FIN to close it and RST when nothing listens on the port, `transport input` doesn't allow Telnet or all five lines are busy. A SYN that gets no answer is sent again after 1 and 3 seconds; after 5 seconds the PC reports "% Connection timed out". Extended access lists can match it with `eq 23`.
+- A half-open connection gives its vty line back after 10 seconds. While a remote command runs without printing anything, the router sends an empty acknowledgement every 10 seconds. If the PC hears nothing for 30 seconds while waiting, it reports the connection lost and sends a reset. Ctrl+C at the vty password prompt ends the session.
+- The simulated web browser reports "refused the connection" when it asks a router or switch for a page, instead of failing.
 - The packet inspector shows TCP flags and sequence numbers and a Telnet layer with the typed line or the output. Passwords appear in plain text there, with a note that Telnet does not encrypt anything. Telnet has its own colour and filter in simulation mode.
 - Hosts answer a TCP connection request on a port with no service with a reset.
 - Saved files keep the vty settings. Files saved by older versions open with the defaults (login on, no password, all transports).

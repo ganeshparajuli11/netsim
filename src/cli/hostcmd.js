@@ -200,9 +200,11 @@ export class HostCmd {
       port = Number(args[1]);
     }
     const d = this.d;
-    this.busy = { cancel: () => {} };
+    let cancelled = false;
+    this.busy = { cancel: () => { cancelled = true; } };
     const done = () => { this.busy = null; this.onBusyDone?.(); };
     d.resolveName(host, (ip) => {
+      if (cancelled) return; // Ctrl+C while the name was being looked up
       if (!ip) { this.print(`Could not find host ${host}. Please check the name and try again.\n`); done(); return; }
       this.print(`Trying ${ip}${port === TELNET_PORT ? '' : ` port ${port}`} ...`);
       let session = null;
