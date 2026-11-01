@@ -6,7 +6,6 @@ Each item should fit in one focused pull request. Split anything bigger before s
 
 ## Backlog
 
-- [ ] Telnet from a PC to a router or switch: `line vty 0 4`, `password`, `login`, then a remote CLI in the PC command prompt
 - [ ] Undo and redo for workspace edits (add/move/delete device, add/remove cable), Ctrl+Z / Ctrl+Shift+Z
 - [ ] Text notes on the workspace: add, edit, move and delete sticky notes saved with the topology
 - [ ] Multi-select (shift-click and drag box) to move or delete several devices at once
@@ -25,6 +24,7 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [ ] Translations framework (UI strings in one file) with one extra language
 - [ ] EtherChannel (static `channel-group <n> mode on`) with spanning tree treating the bundle as one link
 - [ ] Syslog server and NTP client/server services
+- [ ] Inbound access lists also filter traffic addressed to the router itself (so `deny tcp any any eq 23` can block Telnet to the router), plus `access-class` on vty lines
 - [ ] `ip mtu <n>` on router interfaces, so the DF bit and "fragmentation needed" can be shown with normal ping sizes
 
 ## Done
@@ -42,3 +42,4 @@ Each item should fit in one focused pull request. Split anything bigger before s
 - [x] Switch port security: `switchport port-security`, `maximum`, `mac-address sticky`, `violation shutdown|restrict|protect`, err-disabled state with a red light, `show port-security`
 - [x] Interface counters: packets in/out and drops per interface, shown in `show interfaces` and the Ports tab, `clear counters`
 - [x] Extended `ping` dialogue on routers (repeat, size, source, timeout) and `ping` with `-l` size on PCs
+- [x] Telnet from a PC to a router or switch: `line vty 0 4`, `password`, `login`, then a remote CLI in the PC command prompt

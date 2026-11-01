@@ -282,7 +282,8 @@ export function protocolOf(frame) {
     }
     if (ip.proto === 'TCP') {
       const t = ip.payload;
-      if (t.dstPort === 80 || t.srcPort === 80) return 'HTTP';
+      if ((t.dstPort === 80 || t.srcPort === 80) && t.payload && !t.flags) return 'HTTP';
+      if (t.dstPort === 23 || t.srcPort === 23) return 'Telnet';
       return 'TCP';
     }
     if (ip.proto === 'OSPF') return 'OSPF';
@@ -310,6 +311,12 @@ export function summarize(frame) {
     if (p === 'RIP') return `RIP update from ${ip.src}`;
     if (p === 'OSPF') return `OSPF ${OSPF_TYPES[ip.payload.type] || ip.payload.type} from ${ip.payload.routerId}`;
     if (p === 'HTTP') return `HTTP ${ip.payload.payload.method || ip.payload.payload.status || ''}`;
+    if (p === 'Telnet' || p === 'TCP') {
+      const t = ip.payload;
+      const d = t.payload;
+      const what = d?.line !== undefined ? ' (typed line)' : d?.brk ? ' (Ctrl+C)' : d?.text ? ` (${d.text.length} characters)` : '';
+      return `${p} ${ip.src}:${t.srcPort} → ${ip.dst}:${t.dstPort} ${t.flags || 'data'}${what}`;
+    }
     return `${ip.src} → ${ip.dst} ${ip.proto}`;
   }
   if (p === 'STP') return `BPDU root ${frame.payload.rootId}`;

@@ -108,7 +108,11 @@ export class Host extends L3Device {
       return;
     }
     const h = this.udpHandlers.get(`tcp:${seg.dstPort}`);
-    if (h) h(pkt);
+    if (h) { h(pkt); return; }
+    if (seg.flags === 'SYN') {
+      this.explain(`TCP: nothing listens on port ${seg.dstPort} on this host, so it answers with a reset (RST)`);
+      this.sendIp({ src: pkt.dst, dst: pkt.src, proto: 'TCP', payload: { srcPort: seg.dstPort, dstPort: seg.srcPort, flags: 'RST', seq: 0, ack: (seg.seq || 0) + 1 } });
+    }
   }
 
   httpGet(target, cb) {
@@ -120,7 +124,11 @@ export class Host extends L3Device {
       const port = this.nextEphemeral++;
       let done = false;
       const finish = (r) => { if (done) return; done = true; this.udpHandlers.delete(`tcp:${port}`); cb(r); };
-      this.udpHandlers.set(`tcp:${port}`, (pkt) => finish({ status: pkt.payload.payload.status, body: pkt.payload.payload.body, ip }));
+      this.udpHandlers.set(`tcp:${port}`, (pkt) => {
+        const m = pkt.payload.payload;
+        if (pkt.payload.flags === 'RST' || !m) { finish({ error: `${ip} refused the connection` }); return; }
+        finish({ status: m.status, body: m.body, ip });
+      });
       const r = this.sendIp({ dst: ip, proto: 'TCP', payload: { srcPort: port, dstPort: 80, payload: { method: 'GET', path, host } } });
       if (r !== 'ok') { finish({ error: 'Request timed out' }); return; }
       this.net.schedule(3000, () => finish({ error: 'Request timed out' }));

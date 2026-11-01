@@ -6,6 +6,7 @@ import { Rip } from './rip.js';
 import { Ospf, validInt } from './ospf.js';
 import { Acl, aclKey } from './acl.js';
 import { Nat } from './nat.js';
+import { TelnetServer, defaultVty, loadVty, saveVty } from './telnet.js';
 
 export class Router extends L3Device {
   constructor(name, { gig = 3 } = {}) {
@@ -29,6 +30,8 @@ export class Router extends L3Device {
     this.ospf = new Ospf(this);
     this.acl = new Acl(this);
     this.nat = new Nat(this);
+    this.vty = defaultVty();
+    this.telnet = new TelnetServer(this);
     this.udpHandlers.set(67, (iface, pkt) => this.onDhcp(iface, pkt));
     this.udpHandlers.set(520, (iface, pkt) => this.rip.receive(iface, pkt));
   }
@@ -59,6 +62,7 @@ export class Router extends L3Device {
   }
 
   onOspf(iface, pkt) { this.ospf.receive(iface, pkt); }
+  onTcp(iface, pkt) { this.telnet.receive(iface, pkt); }
 
   filterIn(iface, pkt) {
     if (this.acl.check(iface, 'in', pkt)) return true;
@@ -142,6 +146,7 @@ export class Router extends L3Device {
     this.enableSecret = null;
     this.enablePassword = null;
     this.banner = '';
+    this.vty = defaultVty();
     this.hostname = 'Router';
     this.clearArp();
   }
@@ -152,6 +157,7 @@ export class Router extends L3Device {
       enableSecret: this.enableSecret,
       enablePassword: this.enablePassword,
       banner: this.banner,
+      vty: saveVty(this.vty),
       ifaces: this.ifaces.map((i) => ({
         name: i.name, ip: i.ip, mask: i.mask, description: i.description || '',
         shutdown: i.parent ? i.shutdown : i.port.shutdown, vlan: i.vlan, nativeVlan: !!i.nativeVlan,
@@ -177,6 +183,7 @@ export class Router extends L3Device {
     this.enableSecret = c.enableSecret || null;
     this.enablePassword = c.enablePassword || null;
     this.banner = c.banner || '';
+    this.vty = loadVty(c.vty);
     for (const ic of c.ifaces || []) {
       const i = ic.sub ? this.subinterface(ic.name) : this.getIface(ic.name);
       if (!i) continue;

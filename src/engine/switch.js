@@ -4,6 +4,7 @@ import { L3Device } from './l3.js';
 import { BROADCAST_MAC, randomMac } from './util.js';
 import { Stp } from './stp.js';
 import { checkPortSecurity, defaultPortSecurity, loadPortSecurity, savePortSecurity } from './portsec.js';
+import { TelnetServer, defaultVty, loadVty, saveVty } from './telnet.js';
 
 const MAC_AGING = 300000;
 
@@ -26,7 +27,11 @@ export class Switch extends L3Device {
     this.startupConfig = null;
     this.makeIface('Vlan1', null, { isSvi: true, vlan: 1, mac: this.baseMac, shutdown: true });
     this.stp = new Stp(this);
+    this.vty = defaultVty();
+    this.telnet = new TelnetServer(this);
   }
+
+  onTcp(iface, pkt) { this.telnet.receive(iface, pkt); }
 
   // ---------- VLAN helpers ----------
   portVlans(p) {
@@ -153,6 +158,7 @@ export class Switch extends L3Device {
     this.enableSecret = null;
     this.enablePassword = null;
     this.banner = '';
+    this.vty = defaultVty();
     this.hostname = 'Switch';
     this.macTable.clear();
     this.clearArp();
@@ -164,6 +170,7 @@ export class Switch extends L3Device {
       enableSecret: this.enableSecret,
       enablePassword: this.enablePassword,
       banner: this.banner,
+      vty: saveVty(this.vty),
       vlans: [...this.vlans.entries()],
       ports: this.ports.map((p) => ({ name: p.name, shutdown: p.shutdown, errDisabled: p.errDisabled, mac: p.mac, ...p.sw, portSecurity: savePortSecurity(p.sw.portSecurity) })),
       svis: this.ifaces.filter((i) => i.isSvi).map((i) => ({ name: i.name, vlan: i.vlan, ip: i.ip, mask: i.mask, shutdown: i.shutdown })),
@@ -180,6 +187,7 @@ export class Switch extends L3Device {
     this.enableSecret = c.enableSecret || null;
     this.enablePassword = c.enablePassword || null;
     this.banner = c.banner || '';
+    this.vty = loadVty(c.vty);
     if (c.baseMac) this.baseMac = c.baseMac;
     if (c.vlans) this.vlans = new Map(c.vlans.map(([k, v]) => [Number(k), v]));
     for (const pc of c.ports || []) {
